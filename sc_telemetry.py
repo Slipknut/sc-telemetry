@@ -12,8 +12,13 @@ Optional per-capture content tag: drop a sibling text file next to a capture,
 e.g. `mangoapp_2026-06-01_23-29-13.label` containing "Onyx Facility", and it'll
 be used as the session's label/zone in the dashboard.
 """
-import csv, json, os, glob, argparse, statistics, datetime, re
+import csv, json, os, glob, argparse, statistics, datetime, re, sys
 from pathlib import Path
+try:
+    import scpaths, gamelog, mango
+    import settings as scset
+except ImportError:               # running a module standalone / not all present
+    scpaths = gamelog = mango = scset = None
 
 # ── MangoHud parsing ─────────────────────────────────────────────────────────
 # Capture CSV layout: line0 = meta keys, line1 = meta values, line2 = column
@@ -127,9 +132,8 @@ def analyze(path, logidx=None):
     meta = cap["meta"]
     manual = label_for(path)
     enr = {}
-    if logidx:
+    if logidx and gamelog:
         try:
-            import gamelog
             enr = gamelog.enrich(parse_dt(path), dur, logidx)
         except Exception:
             enr = {}
@@ -173,14 +177,20 @@ def analyze(path, logidx=None):
         "hist": {"edges": edges, "counts": counts},
     }
 
-def build_data(logs_dir, sc_dir=None):
-    logidx = None
-    if sc_dir and os.path.isdir(sc_dir):
-        try:
-            import gamelog
-            logidx = gamelog.index_sessions(sc_dir)
-        except Exception:
-            logidx = None
+def build_data(logs_dir, channels=None):
+    logidx, settings_data, active, chan_list = None, {}, "", []
+    if channels:
+        prim = scpaths.primary_channel(channels) if scpaths else None
+        if prim:
+            active = prim["channel"]
+            if gamelog:
+                try: logidx = gamelog.index_sessions(prim["dir"])
+                except Exception: logidx = None
+            if prim.get("attr") and scset:
+                try: settings_data = scset.parse_settings(prim["attr"])
+                except Exception: settings_data = {}
+        chan_list = [{"channel": c["channel"], "last_used": c["last_used"],
+                      "has_logs": c["has_logs"]} for c in channels]
     files = sorted(f for f in glob.glob(os.path.join(logs_dir, "*.csv"))
                    if "_summary" not in f)
     sessions = [s for s in (analyze(f, logidx) for f in files) if s]
@@ -193,6 +203,9 @@ def build_data(logs_dir, sc_dir=None):
         "totals": {"sessions": len(sessions),
                    "hours": round(total_s / 3600, 1),
                    "samples": sum(s["samples"] for s in sessions)},
+        "active_channel": active,
+        "channels": chan_list,
+        "settings": settings_data,
         "sessions": sessions,
     }
 
@@ -232,12 +245,25 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 .cwrap{position:relative;height:240px}
 .foot{color:var(--mut);font-size:11px;text-align:center;margin-top:24px}
 .fps-good{color:var(--good)}.fps-mid{color:var(--warn)}.fps-bad{color:var(--bad)}
+.chips{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px}
+.chip{background:var(--card2);border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px}
+.chip b{color:var(--fg)}.chip span{color:var(--mut)}
+.qbars{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px 18px}
+.qbar{display:flex;align-items:center;gap:8px;font-size:12px}
+.qbar .ql{flex:1;color:var(--mut)}.qbar .qv{width:78px;text-align:right;font-weight:600}
+.qtrack{width:80px;height:6px;background:var(--line);border-radius:3px;overflow:hidden}
+.qfill{height:100%;border-radius:3px}
 </style></head>
 <body><div class="wrap">
 <h1>🛰️ __TITLE__</h1>
 <div class="sub" id="sub"></div>
 <div class="hwbar" id="hwbar"></div>
 <div class="grid" id="totals"></div>
+<div class="panel" id="settingsPanel" style="display:none">
+  <h2>Game settings · <span id="chanTag" style="color:var(--accent)"></span></h2>
+  <div id="setDisplay" class="chips"></div>
+  <div id="setQuality" class="qbars"></div>
+</div>
 <div class="panel"><h2>By zone / activity — avg FPS</h2><div class="cwrap" style="height:300px"><canvas id="cZone"></canvas></div></div>
 <div class="panel"><h2>Sessions</h2><table id="tbl"><thead></thead><tbody></tbody></table></div>
 <div class="panel" id="detail" style="display:none">
@@ -268,6 +294,22 @@ $('#totals').innerHTML = [
   ['Sessions',DATA.totals.sessions],['Hours logged',DATA.totals.hours],
   ['Avg FPS (all)',avgAll],['Samples',DATA.totals.samples.toLocaleString()]
 ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+// settings panel (display + upscaling chips, quality bars)
+if(DATA.settings && DATA.settings.display){
+  const st=DATA.settings;
+  $('#settingsPanel').style.display='block';
+  $('#chanTag').textContent=[DATA.active_channel,(DATA.channels||[]).map(c=>c.channel).join(' / ')]
+    .filter(Boolean).join('  ·  ');
+  const chip=(k,v)=>`<div class="chip"><span>${k}</span> <b>${v}</b></div>`;
+  $('#setDisplay').innerHTML=Object.entries({...st.display,...st.upscaling})
+    .map(([k,v])=>chip(k,v)).join('');
+  const qc=t=>t>=0.95?'#46d18a':t>=0.72?'#9ad14f':t>=0.45?'#ffcf5c':'#ff7a59';
+  $('#setQuality').innerHTML=(st.quality||[]).map(q=>`<div class="qbar">
+    <span class="ql">${q.name}</span>
+    <span class="qtrack"><span class="qfill" style="width:${q.tier*100}%;background:${qc(q.tier)}"></span></span>
+    <span class="qv" style="color:${qc(q.tier)}">${q.value}</span></div>`).join('');
+}
 
 // by-zone aggregate (groups captures by their auto/manual zone label)
 let cZone;
@@ -364,18 +406,45 @@ def render(data, out, title):
     Path(out).write_text(html, encoding="utf-8")
 
 def main():
-    ap = argparse.ArgumentParser(description="MangoHud SC logs -> dashboard.html")
-    ap.add_argument("--logs", default=os.path.expanduser("~/sc-fps-logs"))
+    ap = argparse.ArgumentParser(description="Star Citizen MangoHud logs → dashboard.html")
+    ap.add_argument("--logs", default=os.path.expanduser("~/sc-fps-logs"),
+                    help="folder of MangoHud capture CSVs (default ~/sc-fps-logs)")
     ap.add_argument("--out", default="dist/dashboard.html")
     ap.add_argument("--title", default="Star Citizen — Performance Telemetry")
-    ap.add_argument("--sc-dir", default=os.path.expanduser(
-        "~/Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/LIVE"),
-        help="SC LIVE dir for Game.log zone/build tagging; pass '' to disable")
+    ap.add_argument("--sc", default=None,
+                    help="path to your StarCitizen folder (containing LIVE/PTU/...); "
+                         "auto-detected & saved on first run if omitted")
+    ap.add_argument("--no-sc", action="store_true",
+                    help="skip Game.log + settings integration (MangoHud data only)")
+    ap.add_argument("--setup-mangohud", action="store_true",
+                    help="write a MangoHud logging config + print setup help, then exit")
+    ap.add_argument("--open", action="store_true", help="open the dashboard when done")
     a = ap.parse_args()
-    data = build_data(a.logs, a.sc_dir or None)
-    render(data, a.out, a.title)
-    print(f"✓ {data['totals']['sessions']} session(s), "
-          f"{data['totals']['hours']}h → {a.out}")
+
+    if a.setup_mangohud:
+        if mango: mango.setup()
+        else: print("! mango helper module not found")
+        return
+
+    channels = []
+    if not a.no_sc and scpaths:
+        sc_dir, channels = scpaths.resolve(a.sc, interactive=sys.stdin.isatty())
+        if sc_dir:
+            print(f"  SC install: {sc_dir}")
+            print("  build channels: " + (", ".join(
+                c['channel'] + ("" if c['has_logs'] else " (no logs)") for c in channels) or "none"))
+        else:
+            print("  (no SC folder found — using MangoHud data only; pass --sc PATH or --no-sc)")
+    out = a.out
+    frozen = getattr(sys, "frozen", False)   # running as a PyInstaller binary
+    if frozen and out == "dist/dashboard.html":
+        out = os.path.expanduser("~/sc-telemetry-dashboard.html")
+    data = build_data(a.logs, channels)
+    render(data, out, a.title)
+    print(f"✓ {data['totals']['sessions']} session(s), {data['totals']['hours']}h → {out}")
+    if a.open or frozen:                     # bare binary run → open the result
+        import webbrowser
+        webbrowser.open("file://" + os.path.abspath(out))
 
 if __name__ == "__main__":
     main()

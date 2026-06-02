@@ -2,3 +2,6 @@ dist/
 samples/
 __pycache__/
 *.pyc
+build/
+*.spec
+*.egg-info/
