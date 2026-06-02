@@ -93,7 +93,7 @@ def parse_dt(path):
             pass
     return datetime.datetime.fromtimestamp(os.path.getmtime(path))
 
-def analyze(path):
+def analyze(path, logidx=None):
     cap = parse_capture(path)
     if not cap:
         return None
@@ -125,9 +125,19 @@ def analyze(path):
         b = min(int(v // 10), len(counts) - 1)
         counts[b] += 1
     meta = cap["meta"]
+    manual = label_for(path)
+    enr = {}
+    if logidx:
+        try:
+            import gamelog
+            enr = gamelog.enrich(parse_dt(path), dur, logidx)
+        except Exception:
+            enr = {}
     return {
         "file": os.path.basename(path),
-        "label": label_for(path) or "",
+        "label": manual or enr.get("zone") or "",
+        "build": enr.get("build", ""),
+        "region": enr.get("region") or "",
         "datetime": parse_dt(path).strftime("%Y-%m-%d %H:%M"),
         "duration_s": round(dur, 1),
         "samples": len(fps),
@@ -163,10 +173,17 @@ def analyze(path):
         "hist": {"edges": edges, "counts": counts},
     }
 
-def build_data(logs_dir):
+def build_data(logs_dir, sc_dir=None):
+    logidx = None
+    if sc_dir and os.path.isdir(sc_dir):
+        try:
+            import gamelog
+            logidx = gamelog.index_sessions(sc_dir)
+        except Exception:
+            logidx = None
     files = sorted(f for f in glob.glob(os.path.join(logs_dir, "*.csv"))
                    if "_summary" not in f)
-    sessions = [s for s in (analyze(f) for f in files) if s]
+    sessions = [s for s in (analyze(f, logidx) for f in files) if s]
     sessions.sort(key=lambda s: s["datetime"])
     total_s = sum(s["duration_s"] for s in sessions)
     hw = sessions[-1]["hw"] if sessions else {"cpu": "?", "gpu": "?"}
@@ -221,6 +238,7 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 <div class="sub" id="sub"></div>
 <div class="hwbar" id="hwbar"></div>
 <div class="grid" id="totals"></div>
+<div class="panel"><h2>By zone / activity — avg FPS</h2><div class="cwrap" style="height:300px"><canvas id="cZone"></canvas></div></div>
 <div class="panel"><h2>Sessions</h2><table id="tbl"><thead></thead><tbody></tbody></table></div>
 <div class="panel" id="detail" style="display:none">
   <h2 id="dtitle"></h2>
@@ -250,6 +268,25 @@ $('#totals').innerHTML = [
   ['Sessions',DATA.totals.sessions],['Hours logged',DATA.totals.hours],
   ['Avg FPS (all)',avgAll],['Samples',DATA.totals.samples.toLocaleString()]
 ].map(([k,v])=>`<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+// by-zone aggregate (groups captures by their auto/manual zone label)
+let cZone;
+(function(){
+  const g={};
+  DATA.sessions.forEach(s=>{const z=s.label||'untagged';(g[z]=g[z]||[]).push(s);});
+  const zones=Object.keys(g);
+  if(!zones.length)return;
+  const avgs=zones.map(z=>+(g[z].reduce((a,s)=>a+s.fps.avg,0)/g[z].length).toFixed(1));
+  const cnt=zones.map(z=>g[z].length);
+  cZone=new Chart($('#cZone'),{type:'bar',
+    data:{labels:zones.map((z,i)=>z+'  ('+cnt[i]+')'),
+      datasets:[{label:'avg FPS',data:avgs,
+        backgroundColor:avgs.map(v=>v>=60?'#46d18a':v>=40?'#ffcf5c':'#ff5d6c')}]},
+    options:{indexAxis:'y',animation:false,responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},title:{display:true,text:'avg FPS per zone (capture count)',color:'#8b90a0'}},
+      scales:{x:{grid:{color:'#2a2e3b'},ticks:{color:'#8b90a0'}},
+        y:{grid:{color:'#2a2e3b'},ticks:{color:'#e6e8ef'}}}}});
+})();
 
 // table
 const COLS=[['datetime','When'],['label','Zone'],['duration_s','Dur'],['fps.avg','Avg'],
@@ -293,8 +330,9 @@ function showDetail(i,tr){
     ['Min / Max',s.fps.min+' / '+s.fps.max,''],['Frametime',s.frametime.avg+' ms',''],
     ['GPU load',s.load.gpu_avg+'%',''],['CPU load',s.load.cpu_avg+'%',''],
     ['GPU temp',s.temps.gpu_avg+'° (peak '+s.temps.gpu_peak+'°)',''],
-    ['VRAM peak',s.vram.peak+' GB','']
-  ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>`).join('');
+    ['VRAM peak',s.vram.peak+' GB',''],
+    ['Build',s.build||'?',''],['Region',s.region||'—','']
+  ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}" style="font-size:${(''+v).length>10?'16px':'24px'}">${v}</div></div>`).join('');
   if(cFps)cFps.destroy(); if(cHist)cHist.destroy();
   const gx={grid:{color:'#2a2e3b'},ticks:{color:'#8b90a0'}};
   cFps=new Chart($('#cFps'),{type:'line',data:{labels:s.series.t,
@@ -330,8 +368,11 @@ def main():
     ap.add_argument("--logs", default=os.path.expanduser("~/sc-fps-logs"))
     ap.add_argument("--out", default="dist/dashboard.html")
     ap.add_argument("--title", default="Star Citizen — Performance Telemetry")
+    ap.add_argument("--sc-dir", default=os.path.expanduser(
+        "~/Games/star-citizen/drive_c/Program Files/Roberts Space Industries/StarCitizen/LIVE"),
+        help="SC LIVE dir for Game.log zone/build tagging; pass '' to disable")
     a = ap.parse_args()
-    data = build_data(a.logs)
+    data = build_data(a.logs, a.sc_dir or None)
     render(data, a.out, a.title)
     print(f"✓ {data['totals']['sessions']} session(s), "
           f"{data['totals']['hours']}h → {a.out}")
