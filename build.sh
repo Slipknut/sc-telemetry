@@ -7,5 +7,6 @@ command -v pyinstaller >/dev/null 2>&1 || python3 -m pip install --user pyinstal
 pyinstaller --onefile --clean --name sc-telemetry \
   --hidden-import scpaths --hidden-import settings \
   --hidden-import gamelog  --hidden-import mango \
+  --hidden-import linuxenv \
   sc_telemetry.py
 echo "✓ built dist/sc-telemetry"

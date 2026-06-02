@@ -17,6 +17,7 @@ writes a single `dashboard.html` you can open locally or host anywhere.
 - **Per-session charts** — FPS + frametime trace, FPS distribution histogram
 - **Game settings** — resolution, window mode, VSync, HDR, DLSS/upscaling, and quality tiers (textures, shadows, volumetric clouds, …) read straight from your `attributes.xml`
 - **Auto build/zone tags** — pulled from `Game.log` by timestamp; supports LIVE / PTU / EPTU / HOTFIX / EVOCATI (including renamed folders)
+- **Linux runtime** *(Linux)* — Wine/Proton runner + version, gamescope (res/refresh/HDR), DXVK, esync/fsync, DLSS overrides, read from your LUG `sc-launch.sh` — the things that move FPS as much as in-game settings do
 
 ## The story it tells
 
@@ -46,10 +47,14 @@ python3 sc_telemetry.py
 
 ## First run
 
-On first run it **auto-detects** your Star Citizen install (Wine/Proton prefixes,
-Steam libraries, common drives), or asks you to point at your `StarCitizen`
-folder (the one containing `LIVE` / `PTU` / …) and remembers it. It scans all
-build channels and uses the most-recently-played one for tagging + settings.
+On first run it **auto-detects** your Star Citizen install. On Linux it reads
+your **LUG** launch script (`sc-launch.sh`, found via its desktop shortcut or
+prefix) to get the *exact* install path and runtime params; otherwise it probes
+Wine/Proton prefixes, Steam libraries and common drives. Windows uses the
+default `…\Roberts Space Industries\StarCitizen` locations. If nothing is found
+it asks you to point at your `StarCitizen` folder (the one containing `LIVE` /
+`PTU` / …) and remembers it. It scans all build channels and uses the
+most-recently-played one for tagging + settings.
 
 ```bash
 sc-telemetry                 # auto-detect, build dashboard, open it
@@ -83,6 +88,7 @@ never writes it out. Dashboards are safe to share as-is.
 - [x] Game.log auto zone/build/region tagging + by-zone comparison
 - [x] Graphics-settings panel from `attributes.xml`
 - [x] Multi-build detection (LIVE/PTU/EPTU/HOTFIX/EVOCATI) + first-run config
+- [x] LUG-aware auto-detect + Linux runtime panel (runner/gamescope/DXVK/sync)
 - [x] Standalone Linux/Windows binaries (CI)
 - [ ] `level_stats` join → entity count + main-thread-vs-GPU "why"
 - [ ] Screenshot thumbnails per capture

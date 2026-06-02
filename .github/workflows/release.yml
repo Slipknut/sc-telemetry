@@ -32,7 +32,7 @@ jobs:
         run: >
           pyinstaller --onefile --name sc-telemetry
           --hidden-import scpaths --hidden-import settings
-          --hidden-import gamelog --hidden-import mango
+          --hidden-import gamelog --hidden-import mango --hidden-import linuxenv
           sc_telemetry.py
       - name: Rename artifact
         shell: bash

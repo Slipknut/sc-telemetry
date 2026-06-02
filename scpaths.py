@@ -7,7 +7,7 @@ A channel is a folder under the StarCitizen install dir named LIVE / PTU / EPTU
 Players often rename LIVE -> HOTFIX/PTU between patches to avoid re-downloading,
 so we detect by folder name AND content, and report whichever channels exist.
 """
-import os, json, glob, datetime
+import os, re, json, glob, datetime
 
 CHANNELS = ["LIVE", "PTU", "EPTU", "HOTFIX", "EVOCATI", "TECH-PREVIEW"]
 CONFIG = os.path.join(os.path.expanduser(
@@ -59,8 +59,55 @@ def _candidates():
         f"{home}/AppData/Local/Star Citizen/StarCitizen",
     ]
 
+def _wineprefix_to_sc(prefix):
+    """Map a WINEPREFIX to its StarCitizen folder, if it has build channels."""
+    home = os.path.expanduser("~")
+    prefix = os.path.expandvars(prefix.replace("$HOME", home).replace("${HOME}", home))
+    sc = os.path.join(prefix, "drive_c", "Program Files", _RSI)
+    return sc if channels_in(sc) else None
+
+def _from_lug():
+    """Most Linux players use LUG (Linux Users Group Helper). Its launch script
+    hard-codes WINEPREFIX=..., and it installs a .desktop shortcut pointing at
+    that script — both let us read the *actual* install dir instead of guessing.
+    Returns the StarCitizen folder, or None."""
+    home = os.path.expanduser("~")
+    scripts = []
+    # 1) launch scripts in LUG's usual prefix locations
+    for pat in (f"{home}/Games/star-citizen/sc-launch.sh",
+                f"{home}/Games/*/sc-launch.sh",
+                f"{home}/.local/share/*/sc-launch.sh"):
+        scripts += glob.glob(pat)
+    # 2) follow the .desktop shortcut's Exec= to whatever script it launches
+    for dpat in (f"{home}/.local/share/applications/*.desktop",
+                 f"{home}/Desktop/*.desktop"):
+        for d in glob.glob(dpat):
+            try:
+                txt = open(d, errors="ignore").read()
+            except OSError:
+                continue
+            if not re.search(r"star.?citizen|\bRSI\b", txt, re.I):
+                continue
+            for m in re.findall(r"^Exec=.*?(/\S+\.sh)", txt, re.M):
+                scripts.append(m.strip('"\''))
+    # 3) read WINEPREFIX from each script → derive the SC folder
+    for s in dict.fromkeys(scripts):           # de-dupe, keep order
+        try:
+            txt = open(s, errors="ignore").read()
+        except OSError:
+            continue
+        for m in re.findall(r'(?m)^\s*(?:export\s+)?WINEPREFIX=["\']?([^"\'\n#]+)', txt):
+            sc = _wineprefix_to_sc(m.strip())
+            if sc:
+                return sc
+    return None
+
 def autodetect():
-    """First candidate path that actually contains build channels (short-circuits)."""
+    """First detected path that actually contains build channels (short-circuits).
+    LUG launch-script/shortcut first (authoritative), then bounded path globs."""
+    lug = _from_lug()
+    if lug:
+        return lug
     for pat in _candidates():
         for m in glob.glob(pat):          # non-recursive, bounded depth
             if os.path.isdir(m) and channels_in(m):

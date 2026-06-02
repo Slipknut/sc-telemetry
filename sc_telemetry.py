@@ -15,10 +15,10 @@ be used as the session's label/zone in the dashboard.
 import csv, json, os, glob, argparse, statistics, datetime, re, sys
 from pathlib import Path
 try:
-    import scpaths, gamelog, mango
+    import scpaths, gamelog, mango, linuxenv
     import settings as scset
 except ImportError:               # running a module standalone / not all present
-    scpaths = gamelog = mango = scset = None
+    scpaths = gamelog = mango = scset = linuxenv = None
 
 # ── MangoHud parsing ─────────────────────────────────────────────────────────
 # Capture CSV layout: line0 = meta keys, line1 = meta values, line2 = column
@@ -177,8 +177,8 @@ def analyze(path, logidx=None):
         "hist": {"edges": edges, "counts": counts},
     }
 
-def build_data(logs_dir, channels=None):
-    logidx, settings_data, active, chan_list = None, {}, "", []
+def build_data(logs_dir, channels=None, sc_dir=None):
+    logidx, settings_data, active, chan_list, runtime = None, {}, "", [], None
     if channels:
         prim = scpaths.primary_channel(channels) if scpaths else None
         if prim:
@@ -191,6 +191,9 @@ def build_data(logs_dir, channels=None):
                 except Exception: settings_data = {}
         chan_list = [{"channel": c["channel"], "last_used": c["last_used"],
                       "has_logs": c["has_logs"]} for c in channels]
+    if linuxenv and os.name != "nt" and sc_dir:   # only when an install resolved
+        try: runtime = linuxenv.parse(sc_dir)
+        except Exception: runtime = None
     files = sorted(f for f in glob.glob(os.path.join(logs_dir, "*.csv"))
                    if "_summary" not in f)
     sessions = [s for s in (analyze(f, logidx) for f in files) if s]
@@ -206,6 +209,7 @@ def build_data(logs_dir, channels=None):
         "active_channel": active,
         "channels": chan_list,
         "settings": settings_data,
+        "runtime": runtime,
         "sessions": sessions,
     }
 
@@ -264,6 +268,10 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
   <div id="setDisplay" class="chips"></div>
   <div id="setQuality" class="qbars"></div>
 </div>
+<div class="panel" id="runtimePanel" style="display:none">
+  <h2>Linux runtime <span style="text-transform:none;letter-spacing:0;color:var(--mut)">· wine / proton / dxvk / gamescope, from sc-launch.sh</span></h2>
+  <div id="setRuntime" class="chips"></div>
+</div>
 <div class="panel"><h2>By zone / activity — avg FPS</h2><div class="cwrap" style="height:300px"><canvas id="cZone"></canvas></div></div>
 <div class="panel"><h2>Sessions</h2><table id="tbl"><thead></thead><tbody></tbody></table></div>
 <div class="panel" id="detail" style="display:none">
@@ -309,6 +317,16 @@ if(DATA.settings && DATA.settings.display){
     <span class="ql">${q.name}</span>
     <span class="qtrack"><span class="qfill" style="width:${q.tier*100}%;background:${qc(q.tier)}"></span></span>
     <span class="qv" style="color:${qc(q.tier)}">${q.value}</span></div>`).join('');
+}
+
+// Linux runtime panel (runner / gamescope / dxvk / sync — perf-relevant on Linux)
+if(DATA.runtime && (DATA.runtime.chips||[]).length){
+  $('#runtimePanel').style.display='block';
+  const kc={runner:'#7aa2ff',gamescope:'#c792ea',on:'#46d18a',tag:''};
+  $('#setRuntime').innerHTML=DATA.runtime.chips.map(c=>{
+    const col=kc[c.k];
+    return `<div class="chip"${col?` style="border-color:${col}66"`:''}>`+
+      `<b${col?` style="color:${col}"`:''}>${c.v}</b></div>`;}).join('');
 }
 
 // by-zone aggregate (groups captures by their auto/manual zone label)
@@ -426,7 +444,7 @@ def main():
         else: print("! mango helper module not found")
         return
 
-    channels = []
+    channels, sc_dir = [], None
     if not a.no_sc and scpaths:
         sc_dir, channels = scpaths.resolve(a.sc, interactive=sys.stdin.isatty())
         if sc_dir:
@@ -439,7 +457,7 @@ def main():
     frozen = getattr(sys, "frozen", False)   # running as a PyInstaller binary
     if frozen and out == "dist/dashboard.html":
         out = os.path.expanduser("~/sc-telemetry-dashboard.html")
-    data = build_data(a.logs, channels)
+    data = build_data(a.logs, channels, sc_dir if not a.no_sc and scpaths else None)
     render(data, out, a.title)
     print(f"✓ {data['totals']['sessions']} session(s), {data['totals']['hours']}h → {out}")
     if a.open or frozen:                     # bare binary run → open the result
