@@ -18,6 +18,7 @@ writes a single `dashboard.html` you can open locally or host anywhere.
 - **Game settings** — resolution, window mode, VSync, HDR, DLSS/upscaling, and quality tiers (textures, shadows, volumetric clouds, …) read straight from your `attributes.xml`
 - **Auto build/zone tags** — pulled from `Game.log` by timestamp; supports LIVE / PTU / EPTU / HOTFIX / EVOCATI (including renamed folders)
 - **Linux runtime** *(Linux)* — Wine/Proton runner + version, gamescope (res/refresh/HDR), DXVK, esync/fsync, DLSS overrides, read from your LUG `sc-launch.sh` — the things that move FPS as much as in-game settings do
+- **By-runtime comparison** *(Linux)* — opt in with `--install-hook` to stamp your runtime at each launch; swap runners between sessions and the dashboard charts avg FPS & 1% low *per runtime*, so you can see which Wine/Proton/gamescope/DXVK combo is actually fastest
 
 ## The story it tells
 
@@ -75,6 +76,13 @@ Under gamescope, launch with `gamescope --mangoapp -- <game>`.
 **Tip:** capture per activity — start a log entering a Contested Zone, stop on
 exit, start again in Onyx. Each becomes its own session, auto-tagged with zone +
 build. (No captures yet? `python3 make_samples.py` makes demo data.)
+
+**Compare runtimes (Linux):** run `sc-telemetry --install-hook` once — it adds a
+runtime-stamp line to your LUG `sc-launch.sh` (idempotent, backs up first). Now
+each launch records its Wine/Proton·gamescope·DXVK config; captures bind to the
+runtime they ran under (by timestamp), and once you've played on ≥2 runtimes the
+dashboard adds a **By runtime — avg FPS** chart. Don't use LUG? Add this to your
+launch script yourself: `sc-telemetry --stamp-runtime`.
 
 ## Privacy
 

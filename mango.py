@@ -59,6 +59,11 @@ HELP = """
  exit, start again in Onyx, etc. Each capture becomes its own dashboard session,
  auto-tagged with zone + build from your Game.log.
 
+ Compare runtimes (Linux): once, run
+   sc-telemetry --install-hook
+ to record your Wine/Proton·gamescope·DXVK setup at each launch. Swap runners
+ between sessions and the dashboard charts avg FPS per runtime automatically.
+
  Then build the dashboard:   sc-telemetry
 ─────────────────────────────────────────────────────────────────────
 """

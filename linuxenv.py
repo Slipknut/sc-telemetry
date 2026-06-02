@@ -7,7 +7,7 @@ settings do (e.g. a Wine-TkG bump, ntsync vs fsync, gamescope cap), so they're
 worth showing next to the settings panel. Source is the LUG launch script
 (sc-launch.sh); we locate it from the install dir or LUG's usual prefixes.
 """
-import os, re, glob
+import os, re, glob, json, datetime
 
 def find_launch_script(sc_dir=None):
     """sc_dir is .../<prefix>/drive_c/Program Files/Roberts Space Industries/
@@ -136,6 +136,92 @@ def parse(sc_dir=None, script=None):
     return {"source": script, "runner": runner, "gamescope": gs,
             "sync": sync, "dxvk": dxvk, "mangohud": mangohud, "chips": chips}
 
+def label(rt):
+    """Short, group-by-able name for a runtime — primarily the runner."""
+    r = (rt or {}).get("runner") or {}
+    s = (r.get("type", "") + " " + r.get("version", "")).strip()
+    return s or "runtime"
+
+# ── per-capture snapshots: stamp the runtime at each launch, match by time ────
+# A launch stamps the *current* runtime into <logs>/runtime/<ts>.json. Each
+# MangoHud capture then binds to the most-recent snapshot before it — so when
+# you swap runners between sessions, every capture keeps the runtime it ran on.
+
+def _rt_dir(logs_dir):
+    return os.path.join(os.path.expanduser(logs_dir), "runtime")
+
+def snapshot(sc_dir=None, logs_dir="~/sc-fps-logs", script=None, now=None):
+    """Write a timestamped runtime snapshot. Returns the path, or None."""
+    rt = parse(sc_dir, script)
+    if not rt:
+        return None
+    now = now or datetime.datetime.now()
+    rt["stamped_at"] = now.strftime("%Y-%m-%d %H-%M-%S")
+    rt["label"] = label(rt)
+    try:
+        rt["kernel"] = os.uname().release          # live, in case the HUD omits it
+    except Exception:
+        pass
+    d = _rt_dir(logs_dir)
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, now.strftime("%Y-%m-%d_%H-%M-%S") + ".json")
+    with open(path, "w") as fh:
+        json.dump(rt, fh, indent=2)
+    return path
+
+def load_snapshots(logs_dir="~/sc-fps-logs"):
+    """All snapshots as (when, runtime), oldest first."""
+    out = []
+    for f in glob.glob(os.path.join(_rt_dir(logs_dir), "*.json")):
+        try:
+            with open(f) as fh:
+                rt = json.load(fh)
+            when = datetime.datetime.strptime(rt["stamped_at"], "%Y-%m-%d %H-%M-%S")
+        except (OSError, ValueError, KeyError, json.JSONDecodeError):
+            continue
+        out.append((when, rt))
+    out.sort(key=lambda x: x[0])
+    return out
+
+def match(capture_start, snapshots):
+    """The runtime in effect at capture time = newest snapshot at/just-before it."""
+    if not snapshots:
+        return None
+    grace = datetime.timedelta(minutes=10)         # tolerate small clock skew
+    prior = [rt for when, rt in snapshots if when <= capture_start + grace]
+    return prior[-1] if prior else snapshots[0][1]
+
+# ── launch-script hook (so stamping happens automatically each play) ──────────
+HOOK_START = "# >>> sc-telemetry runtime stamp >>>"
+HOOK_END = "# <<< sc-telemetry runtime stamp <<<"
+
+def _hook_block(cmd):
+    # placement-independent: snapshot() reads the script file, not live env,
+    # so anywhere in the script records the right config + a launch timestamp.
+    return f"{HOOK_START}\n{cmd} >/dev/null 2>&1 || true\n{HOOK_END}"
+
+def install_hook(script, cmd):
+    """Insert/update the stamp hook in a launch script. Returns ('installed'|
+    'updated', backup_path)."""
+    with open(script) as fh:
+        txt = fh.read()
+    block = _hook_block(cmd)
+    if HOOK_START in txt:
+        new = re.sub(re.escape(HOOK_START) + r".*?" + re.escape(HOOK_END),
+                     block, txt, flags=re.S)
+        action = "updated"
+    else:
+        lines = txt.splitlines(keepends=True)
+        at = 1 if lines and lines[0].startswith("#!") else 0   # after shebang
+        new = "".join(lines[:at]) + "\n" + block + "\n" + "".join(lines[at:])
+        action = "installed"
+    bak = script + ".bak-" + datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    with open(bak, "w") as fh:
+        fh.write(txt)
+    with open(script, "w") as fh:
+        fh.write(new)
+    return action, bak
+
 if __name__ == "__main__":     # quick manual check
-    import json, sys
+    import sys
     print(json.dumps(parse(sys.argv[1] if len(sys.argv) > 1 else None), indent=2))

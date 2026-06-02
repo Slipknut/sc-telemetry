@@ -98,7 +98,7 @@ def parse_dt(path):
             pass
     return datetime.datetime.fromtimestamp(os.path.getmtime(path))
 
-def analyze(path, logidx=None):
+def analyze(path, logidx=None, rtidx=None):
     cap = parse_capture(path)
     if not cap:
         return None
@@ -137,9 +137,17 @@ def analyze(path, logidx=None):
             enr = gamelog.enrich(parse_dt(path), dur, logidx)
         except Exception:
             enr = {}
+    rt_key = ""
+    if rtidx and linuxenv:
+        try:
+            rt = linuxenv.match(parse_dt(path), rtidx)
+            rt_key = rt.get("label", "") if rt else ""
+        except Exception:
+            rt_key = ""
     return {
         "file": os.path.basename(path),
         "label": manual or enr.get("zone") or "",
+        "runtime_key": rt_key,
         "build": enr.get("build", ""),
         "region": enr.get("region") or "",
         "datetime": parse_dt(path).strftime("%Y-%m-%d %H:%M"),
@@ -194,9 +202,14 @@ def build_data(logs_dir, channels=None, sc_dir=None):
     if linuxenv and os.name != "nt" and sc_dir:   # only when an install resolved
         try: runtime = linuxenv.parse(sc_dir)
         except Exception: runtime = None
+    rtidx = linuxenv.load_snapshots(logs_dir) if linuxenv else []
+    runtimes = {}                                  # label → representative chips
+    for _when, rt in rtidx:
+        runtimes[rt.get("label", "?")] = {"chips": rt.get("chips", []),
+                                          "stamped_at": rt.get("stamped_at", "")}
     files = sorted(f for f in glob.glob(os.path.join(logs_dir, "*.csv"))
                    if "_summary" not in f)
-    sessions = [s for s in (analyze(f, logidx) for f in files) if s]
+    sessions = [s for s in (analyze(f, logidx, rtidx) for f in files) if s]
     sessions.sort(key=lambda s: s["datetime"])
     total_s = sum(s["duration_s"] for s in sessions)
     hw = sessions[-1]["hw"] if sessions else {"cpu": "?", "gpu": "?"}
@@ -210,6 +223,7 @@ def build_data(logs_dir, channels=None, sc_dir=None):
         "channels": chan_list,
         "settings": settings_data,
         "runtime": runtime,
+        "runtimes": runtimes,
         "sessions": sessions,
     }
 
@@ -273,6 +287,10 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
   <div id="setRuntime" class="chips"></div>
 </div>
 <div class="panel"><h2>By zone / activity — avg FPS</h2><div class="cwrap" style="height:300px"><canvas id="cZone"></canvas></div></div>
+<div class="panel" id="runtimeCmpPanel" style="display:none">
+  <h2>By runtime — avg FPS <span style="text-transform:none;letter-spacing:0;color:var(--mut)">· same scenes, different Wine/Proton·gamescope·DXVK</span></h2>
+  <div class="cwrap" style="height:240px"><canvas id="cRuntime"></canvas></div>
+</div>
 <div class="panel"><h2>Sessions</h2><table id="tbl"><thead></thead><tbody></tbody></table></div>
 <div class="panel" id="detail" style="display:none">
   <h2 id="dtitle"></h2>
@@ -348,8 +366,29 @@ let cZone;
         y:{grid:{color:'#2a2e3b'},ticks:{color:'#e6e8ef'}}}}});
 })();
 
+// by-runtime comparison — only meaningful once captures span ≥2 runtimes
+let cRuntime;
+(function(){
+  const g={};
+  DATA.sessions.forEach(s=>{const k=s.runtime_key;if(k)(g[k]=g[k]||[]).push(s);});
+  const keys=Object.keys(g);
+  if(keys.length<2)return;                       // nothing to compare yet
+  $('#runtimeCmpPanel').style.display='block';
+  const avgs=keys.map(k=>+(g[k].reduce((a,s)=>a+s.fps.avg,0)/g[k].length).toFixed(1));
+  const lows=keys.map(k=>+(g[k].reduce((a,s)=>a+s.fps.p1,0)/g[k].length).toFixed(1));
+  const cnt=keys.map(k=>g[k].length);
+  cRuntime=new Chart($('#cRuntime'),{type:'bar',
+    data:{labels:keys.map((k,i)=>k+'  ('+cnt[i]+')'),
+      datasets:[{label:'avg FPS',data:avgs,backgroundColor:'#7aa2ff'},
+                {label:'1% low',data:lows,backgroundColor:'#3a4a6b'}]},
+    options:{indexAxis:'y',animation:false,responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{labels:{color:'#8b90a0'}},title:{display:true,text:'avg FPS & 1% low per runtime (capture count)',color:'#8b90a0'}},
+      scales:{x:{grid:{color:'#2a2e3b'},ticks:{color:'#8b90a0'}},
+        y:{grid:{color:'#2a2e3b'},ticks:{color:'#e6e8ef'}}}}});
+})();
+
 // table
-const COLS=[['datetime','When'],['label','Zone'],['duration_s','Dur'],['fps.avg','Avg'],
+const COLS=[['datetime','When'],['label','Zone'],['runtime_key','Runtime'],['duration_s','Dur'],['fps.avg','Avg'],
 ['fps.p1','1% low'],['fps.p01','0.1% low'],['load.gpu_avg','GPU%'],['load.cpu_avg','CPU%'],
 ['bottleneck','Bottleneck'],['temps.gpu_peak','GPU°'],['vram.peak','VRAM']];
 const get=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
@@ -423,6 +462,16 @@ def render(data, out, title):
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(html, encoding="utf-8")
 
+def _shq(s):
+    import shlex
+    return shlex.quote(os.path.expanduser(s))
+
+def _self_cmd():
+    """How to re-invoke this tool from a shell script (binary vs source)."""
+    if getattr(sys, "frozen", False):
+        return _shq(sys.executable)
+    return "python3 " + _shq(os.path.abspath(__file__))
+
 def main():
     ap = argparse.ArgumentParser(description="Star Citizen MangoHud logs → dashboard.html")
     ap.add_argument("--logs", default=os.path.expanduser("~/sc-fps-logs"),
@@ -436,12 +485,37 @@ def main():
                     help="skip Game.log + settings integration (MangoHud data only)")
     ap.add_argument("--setup-mangohud", action="store_true",
                     help="write a MangoHud logging config + print setup help, then exit")
+    ap.add_argument("--stamp-runtime", action="store_true",
+                    help="record a runtime snapshot (run from your launch script) then exit")
+    ap.add_argument("--install-hook", action="store_true",
+                    help="add --stamp-runtime to your LUG launch script (idempotent) then exit")
     ap.add_argument("--open", action="store_true", help="open the dashboard when done")
     a = ap.parse_args()
 
     if a.setup_mangohud:
         if mango: mango.setup()
         else: print("! mango helper module not found")
+        return
+
+    if a.stamp_runtime:                              # called from the launch script
+        sc_dir = (scpaths.resolve(a.sc, interactive=False)[0] if scpaths else None)
+        p = linuxenv.snapshot(sc_dir, a.logs) if linuxenv else None
+        print(f"  stamped runtime → {p}" if p else "  (no Linux runtime to stamp)")
+        return
+
+    if a.install_hook:
+        if not linuxenv:
+            print("! linuxenv helper not found"); return
+        sc_dir = scpaths.resolve(a.sc, interactive=False)[0] if scpaths else None
+        script = linuxenv.find_launch_script(sc_dir)
+        if not script:
+            print("  ! No LUG launch script (sc-launch.sh) found. Add this line to "
+                  "your launch script manually:\n      "
+                  f"{_self_cmd()} --stamp-runtime"); return
+        cmd = f"{_self_cmd()} --stamp-runtime --logs {_shq(a.logs)}"
+        action, bak = linuxenv.install_hook(script, cmd)
+        print(f"  ✓ {action} runtime-stamp hook in {script}\n    (backup: {os.path.basename(bak)})")
+        print("  Each launch now records its runtime; captures are matched to it.")
         return
 
     channels, sc_dir = [], None
