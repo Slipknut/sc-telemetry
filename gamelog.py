@@ -39,6 +39,25 @@ def _region(shard):
                 return v
     return shard
 
+def _meta_from(path):
+    """Build id + local session start from a BackupNameAttachment, looked for in
+    the filename (logbackups) and, failing that, the first log line (the live
+    Game.log carries it there: `<...Z> BackupNameAttachment=" Build(..) DD Mon YY
+    (HH MM SS)"`)."""
+    m = BAK.search(os.path.basename(path))
+    if not m:
+        try:
+            with open(path, errors="ignore") as fh:
+                m = BAK.search(fh.readline())
+        except OSError:
+            m = None
+    if not m:
+        return None, None
+    start = datetime.datetime(2000 + int(m.group(4)), MON.get(m.group(3), 1),
+                              int(m.group(2)), int(m.group(5)),
+                              int(m.group(6)), int(m.group(7)))
+    return m.group(1), start
+
 def index_sessions(sc_dir):
     """Cheap index of session logs: build + local start/end, no full parse."""
     out = []
@@ -47,16 +66,11 @@ def index_sessions(sc_dir):
     if os.path.exists(live):
         paths.append(live)
     for p in paths:
-        m = BAK.search(os.path.basename(p))
-        build = None
-        if m:
-            build = m.group(1)
-            start = datetime.datetime(2000 + int(m.group(4)), MON.get(m.group(3), 1),
-                                      int(m.group(2)), int(m.group(5)),
-                                      int(m.group(6)), int(m.group(7)))
-        else:                              # live Game.log: use mtime as local start-ish
-            start = datetime.datetime.fromtimestamp(os.path.getmtime(p))
-        end = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+        build, start = _meta_from(p)
+        mtime = datetime.datetime.fromtimestamp(os.path.getmtime(p))
+        if start is None:                  # no attachment found: fall back to mtime
+            start = mtime
+        end = mtime                        # last write ≈ session end (esp. live log)
         if end < start:
             end = start + datetime.timedelta(hours=6)
         out.append({"path": p, "build": build, "start": start, "end": end})
@@ -131,7 +145,9 @@ def enrich(capture_start_local, duration_s, sessions):
         zone = _prettify(loc_anchor[1])
     elif city_count:
         zone = max(city_count, key=city_count.get).replace("NewBabbage", "New Babbage")
+    elif (shard or "").startswith("pub"):
+        zone = "Stanton (PU)"              # in a PU shard but no location line in window
     else:
-        zone = "Stanton (PU)"
+        zone = ""                          # menu/launcher/loading — nothing to claim
     return {"build": (branch or "?") + (f" ({build})" if build else ""),
             "region": _region(shard), "zone": zone}

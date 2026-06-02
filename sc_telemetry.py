@@ -462,6 +462,58 @@ def render(data, out, title):
     Path(out).parent.mkdir(parents=True, exist_ok=True)
     Path(out).write_text(html, encoding="utf-8")
 
+def _write_label(csv_path, text):
+    base = re.sub(r"\.csv$", "", csv_path)
+    with open(base + ".label", "w") as fh:
+        fh.write(text.strip() + "\n")
+
+def tag_captures(logs_dir, files, label):
+    """Manually label captures (overrides auto-tagging). With FILES + --label,
+    set directly; with no FILES, interactively prompt for every untagged one."""
+    if files:                                    # direct: --tag F1 F2 --label "..."
+        if not label:
+            print("  ! pass --label \"Your label\" with the file(s) to tag.")
+            return
+        for f in files:
+            f = os.path.expanduser(f)
+            if not os.path.exists(f):            # allow bare basenames in logs_dir
+                alt = os.path.join(logs_dir, os.path.basename(f))
+                f = alt if os.path.exists(alt) else f
+            if not os.path.exists(f):
+                print(f"  ! not found: {f}"); continue
+            _write_label(f, label)
+            print(f"  ✓ {os.path.basename(f)} → {label}")
+        return
+    # interactive: walk every untagged capture
+    csvs = sorted(g for g in glob.glob(os.path.join(logs_dir, "*.csv"))
+                  if "_summary" not in g)
+    untagged = [c for c in csvs if not label_for(c)]
+    if not untagged:
+        print("  All captures already have a label. Nothing to tag.")
+        return
+    print(f"\n  {len(untagged)} untagged capture(s). Type a label for each "
+          "(blank = skip, Ctrl-C = stop):\n")
+    for c in untagged:
+        try:
+            s = analyze(c)
+        except Exception:
+            s = None
+        ctx = f"avg {s['fps']['avg']} FPS · {fmt_dur(s['duration_s'])}" if s else "?"
+        when = parse_dt(c).strftime("%Y-%m-%d %H:%M")
+        try:
+            lab = input(f"   {when}  ({ctx})\n     label: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(); break
+        if lab:
+            _write_label(c, lab)
+            print("     ✓ tagged\n")
+        else:
+            print("     – skipped\n")
+
+def fmt_dur(s):
+    m, sec = divmod(int(s), 60)
+    return f"{m}m {sec}s" if m else f"{sec}s"
+
 def _shq(s):
     import shlex
     return shlex.quote(os.path.expanduser(s))
@@ -489,8 +541,16 @@ def main():
                     help="record a runtime snapshot (run from your launch script) then exit")
     ap.add_argument("--install-hook", action="store_true",
                     help="add --stamp-runtime to your LUG launch script (idempotent) then exit")
+    ap.add_argument("--tag", nargs="*", metavar="CSV",
+                    help="label captures: no args = interactively tag every untagged "
+                         "capture; with CSV file(s) = apply --label to them, then exit")
+    ap.add_argument("--label", help="label text to apply to the --tag CSV file(s)")
     ap.add_argument("--open", action="store_true", help="open the dashboard when done")
     a = ap.parse_args()
+
+    if a.tag is not None:
+        tag_captures(a.logs, a.tag, a.label)
+        return
 
     if a.setup_mangohud:
         if mango: mango.setup()

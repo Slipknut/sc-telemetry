@@ -83,6 +83,15 @@ is what the bottleneck classification needs. Point `--logs` at your capture
 folder. *(A CapFrameX/PresentMon importer is in progress — see roadmap.)* Game.log
 zone/build tagging and `attributes.xml` settings work the same on Windows.
 
+**Tagging:** captures are auto-tagged with zone/build/region from `Game.log`. To
+label one yourself — or rename/override an auto-tag — use:
+```bash
+sc-telemetry --tag                              # interactively label every untagged capture
+sc-telemetry --tag capture.csv --label "Onyx"   # set a label directly (overrides auto)
+```
+A manual label always wins over the auto-tag. (Captures with no in-game zone —
+pure menu/launcher time — stay untagged unless you label them.)
+
 **Compare runtimes (Linux):** run `sc-telemetry --install-hook` once — it adds a
 runtime-stamp line to your LUG `sc-launch.sh` (idempotent, backs up first). Now
 each launch records its Wine/Proton·gamescope·DXVK config; captures bind to the
