@@ -77,6 +77,12 @@ Under gamescope, launch with `gamescope --mangoapp -- <game>`.
 exit, start again in Onyx. Each becomes its own session, auto-tagged with zone +
 build. (No captures yet? `python3 make_samples.py` makes demo data.)
 
+**On Windows:** MangoHud is Linux-only, so capture with **[CapFrameX](https://www.capframex.com/)**
+(free, open-source) — its bundled sensor service logs GPU/CPU load + temps, which
+is what the bottleneck classification needs. Point `--logs` at your capture
+folder. *(A CapFrameX/PresentMon importer is in progress — see roadmap.)* Game.log
+zone/build tagging and `attributes.xml` settings work the same on Windows.
+
 **Compare runtimes (Linux):** run `sc-telemetry --install-hook` once — it adds a
 runtime-stamp line to your LUG `sc-launch.sh` (idempotent, backs up first). Now
 each launch records its Wine/Proton·gamescope·DXVK config; captures bind to the
@@ -98,6 +104,7 @@ never writes it out. Dashboards are safe to share as-is.
 - [x] Multi-build detection (LIVE/PTU/EPTU/HOTFIX/EVOCATI) + first-run config
 - [x] LUG-aware auto-detect + Linux runtime panel (runner/gamescope/DXVK/sync)
 - [x] Standalone Linux/Windows binaries (CI)
+- [ ] Windows capture import (CapFrameX / PresentMon CSV + JSON → same session model)
 - [ ] `level_stats` join → entity count + main-thread-vs-GPU "why"
 - [ ] Screenshot thumbnails per capture
 - [ ] Community aggregation (crowd FPS-by-zone/build) · trend-across-patches · offline Chart.js
