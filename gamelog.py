@@ -229,4 +229,6 @@ def enrich(capture_start_local, duration_s, sessions):
             continue
         deduped.append(e)
     return {"build": (branch or "?") + (f" ({build})" if build else ""),
-            "region": _region(shard), "zone": zone, "events": deduped}
+            "region": _region(shard), "zone": zone, "events": deduped,
+            "session": {"start": sess["start"].strftime("%Y-%m-%d %H:%M:%S"),
+                        "end": sess["end"].strftime("%Y-%m-%d %H:%M:%S")}}

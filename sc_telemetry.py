@@ -151,7 +151,9 @@ def analyze(path, logidx=None, rtidx=None):
         "runtime_key": rt_key,
         "build": enr.get("build", ""),
         "region": enr.get("region") or "",
+        "session": enr.get("session"),
         "datetime": parse_dt(path).strftime("%Y-%m-%d %H:%M"),
+        "start_iso": parse_dt(path).strftime("%Y-%m-%dT%H:%M:%S"),
         "duration_s": round(dur, 1),
         "samples": len(fps),
         "fps": {
@@ -213,6 +215,7 @@ def build_data(logs_dir, channels=None, sc_dir=None):
     sessions = [s for s in (analyze(f, logidx, rtidx) for f in files) if s]
     sessions.sort(key=lambda s: s["datetime"])
     total_s = sum(s["duration_s"] for s in sessions)
+    play_sessions = _group_play_sessions(sessions)
     hw = sessions[-1]["hw"] if sessions else {"cpu": "?", "gpu": "?"}
     return {
         "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -225,8 +228,36 @@ def build_data(logs_dir, channels=None, sc_dir=None):
         "settings": settings_data,
         "runtime": runtime,
         "runtimes": runtimes,
+        "play_sessions": play_sessions,
         "sessions": sessions,
     }
+
+def _group_play_sessions(sessions):
+    """Group captures that share one Game.log session (a single game launch) into
+    play sessions, so the dashboard can lay their activity splits on one timeline.
+    Captures with no matched session each become their own group."""
+    groups = {}
+    for i, s in enumerate(sessions):
+        sess = s.get("session")
+        key = sess["start"] if sess else "solo:" + s["start_iso"]
+        g = groups.get(key)
+        if not g:
+            g = groups[key] = {
+                "start": (sess["start"].replace(" ", "T") if sess else s["start_iso"]),
+                "end": (sess["end"].replace(" ", "T") if sess else None),
+                "build": s.get("build", ""), "region": s.get("region", ""),
+                "caps": [],
+            }
+        g["caps"].append(i)
+    out = []
+    for g in sorted(groups.values(), key=lambda g: g["start"]):
+        caps = [sessions[i] for i in g["caps"]]
+        captured = sum(c["duration_s"] for c in caps)
+        nev = sum(len(c.get("events", [])) for c in caps)
+        bad = sum(1 for c in caps for e in c.get("events", []) if e.get("sev") == "bad")
+        out.append({**g, "captured_s": round(captured, 1),
+                    "n_captures": len(caps), "n_events": nev, "n_drops": bad})
+    return out
 
 # ── HTML generation ──────────────────────────────────────────────────────────
 HTML = r"""<!DOCTYPE html>
@@ -277,6 +308,14 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 .ev{font-size:13px;padding:5px 10px;border-left:3px solid var(--line);margin-bottom:4px;background:var(--card2);border-radius:0 6px 6px 0}
 .ev-t{display:inline-block;min-width:64px;color:var(--mut);font-variant-numeric:tabular-nums}
 .ev-bad{border-left-color:#ff5d6c}.ev-warn{border-left-color:#ffcf5c}.ev-info{border-left-color:#3a3f4d;opacity:.8}
+.psess{margin-bottom:20px}
+.phead{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px 16px;font-size:12px;color:var(--mut);margin-bottom:6px}
+.ptrack{position:relative;height:50px;background:var(--card2);border:1px solid var(--line);border-radius:8px}
+.pseg{position:absolute;top:3px;bottom:3px;border-radius:5px;overflow:hidden;cursor:pointer;display:flex;flex-direction:column;justify-content:center;padding:2px 7px;font-size:11px;line-height:1.2;color:#0b0d12;font-weight:600;box-sizing:border-box;white-space:nowrap}
+.pseg small{font-weight:500;opacity:.75}
+.pseg:hover{outline:2px solid #ffffff88;z-index:5}
+.ptick{position:absolute;top:0;bottom:0;width:2px;pointer-events:none;z-index:3}
+.paxis{display:flex;justify-content:space-between;font-size:10px;color:var(--mut);margin-top:3px;font-variant-numeric:tabular-nums}
 </style></head>
 <body><div class="wrap">
 <h1>🛰️ __TITLE__</h1>
@@ -296,6 +335,10 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 <div class="panel" id="runtimeCmpPanel" style="display:none">
   <h2>By runtime — avg FPS <span style="text-transform:none;letter-spacing:0;color:var(--mut)">· same scenes, different Wine/Proton·gamescope·DXVK</span></h2>
   <div class="cwrap" style="height:240px"><canvas id="cRuntime"></canvas></div>
+</div>
+<div class="panel" id="playPanel" style="display:none">
+  <h2>Play sessions <span style="text-transform:none;letter-spacing:0;color:var(--mut)">· activity splits on one timeline (click a segment for detail · vertical ticks = server events)</span></h2>
+  <div id="playList"></div>
 </div>
 <div class="panel"><h2>Sessions</h2><table id="tbl"><thead></thead><tbody></tbody></table></div>
 <div class="panel" id="detail" style="display:none">
@@ -392,6 +435,44 @@ let cRuntime;
       plugins:{legend:{labels:{color:'#8b90a0'}},title:{display:true,text:'avg FPS & 1% low per runtime (capture count)',color:'#8b90a0'}},
       scales:{x:{grid:{color:'#2a2e3b'},ticks:{color:'#8b90a0'}},
         y:{grid:{color:'#2a2e3b'},ticks:{color:'#e6e8ef'}}}}});
+})();
+
+// play sessions — captures from one game launch laid out on a wall-clock timeline
+(function(){
+  const ps=DATA.play_sessions||[];
+  const total=DATA.sessions.length;
+  if(!ps.length || total<1) return;
+  $('#playPanel').style.display='block';
+  const fc=v=>v>=60?'#46d18a':v>=40?'#ffcf5c':'#ff5d6c';
+  const T=s=>new Date(s).getTime();
+  const clock=ms=>{const d=new Date(ms);return ('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);};
+  $('#playList').innerHTML=ps.map(g=>{
+    const caps=g.caps.map(i=>DATA.sessions[i]);
+    let t0=g.start?T(g.start):0, t1=g.end?T(g.end):0;
+    caps.forEach(c=>{const cs=T(c.start_iso),ce=cs+c.duration_s*1000;
+      if(!t0||cs<t0)t0=cs; if(ce>t1)t1=ce;});
+    const span=Math.max(1,t1-t0);
+    let segs='',ticks='';
+    caps.forEach(c=>{
+      const cs=T(c.start_iso),ce=cs+c.duration_s*1000;
+      const L=(cs-t0)/span*100, W=Math.max(1.5,(ce-cs)/span*100), idx=DATA.sessions.indexOf(c);
+      segs+=`<div class="pseg" style="left:${L}%;width:${W}%;background:${fc(c.fps.avg)}" `+
+        `onclick="showDetail(${idx})" title="${(c.label||c.file)} · avg ${c.fps.avg} fps · 1% ${c.fps.p1} · ${fmtDur(c.duration_s)}">`+
+        `${c.label||c.file}<small>${c.fps.avg} fps</small></div>`;
+      (c.events||[]).forEach(e=>{const x=(cs+e.at*1000-t0)/span*100;
+        ticks+=`<div class="ptick" style="left:${x}%;background:${EVCOL[e.sev]}" title="+${Math.round(e.at)}s · ${e.detail}"></div>`;});
+    });
+    const drops=g.n_drops?`<span style="color:${EVCOL.bad}">⛔${g.n_drops} drop${g.n_drops>1?'s':''}</span> · `:'';
+    return `<div class="psess">
+      <div class="phead">
+        <b style="color:var(--fg)">${clock(t0)}–${clock(t1)}</b>
+        <span>${new Date(t0).toLocaleDateString()} · ${g.build||'?'}${g.region?' · '+g.region:''}</span>
+        <span>${g.n_captures} split${g.n_captures>1?'s':''} · ${fmtDur(g.captured_s)} captured of ${fmtDur((t1-t0)/1000)} · ${drops}${g.n_events} server events</span>
+      </div>
+      <div class="ptrack">${segs}${ticks}</div>
+      <div class="paxis"><span>${clock(t0)}</span><span>${clock(t1)}</span></div>
+    </div>`;
+  }).join('');
 })();
 
 // table
