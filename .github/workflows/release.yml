@@ -34,6 +34,7 @@ jobs:
         run: >
           pyinstaller --onefile --name sc-telemetry
           --add-data "chart.min.js${{ matrix.sep }}."
+          --add-data "html2canvas.min.js${{ matrix.sep }}."
           --hidden-import scpaths --hidden-import settings
           --hidden-import gamelog --hidden-import mango --hidden-import linuxenv
           sc_telemetry.py

@@ -265,6 +265,7 @@ HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
 __CHARTJS__
+__HTML2CANVAS__
 <style>
 :root{--bg:#0e0f13;--card:#171922;--card2:#1e212c;--fg:#e6e8ef;--mut:#8b90a0;
 --accent:#7c5cff;--gpu:#4fb0ff;--cpu:#ff7a59;--good:#46d18a;--warn:#ffcf5c;--bad:#ff5d6c;--line:#2a2e3b}
@@ -316,10 +317,18 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 .pseg:hover{outline:2px solid #ffffff88;z-index:5}
 .ptick{position:absolute;top:0;bottom:0;width:2px;pointer-events:none;z-index:3}
 .paxis{display:flex;justify-content:space-between;font-size:10px;color:var(--mut);margin-top:3px;font-variant-numeric:tabular-nums}
+.toolbar{display:flex;gap:8px;margin:-4px 0 16px}
+.btn{background:var(--card2);border:1px solid var(--line);color:var(--fg);border-radius:8px;padding:7px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn:disabled{opacity:.5;cursor:default}
 </style></head>
 <body><div class="wrap">
 <h1>🛰️ __TITLE__</h1>
 <div class="sub" id="sub"></div>
+<div class="toolbar">
+  <button class="btn" id="expCsv" title="Session table → spreadsheet">⬇ CSV</button>
+  <button class="btn" id="expImg" title="Full dashboard → image (everything, not just the screen)">🖼 JPEG</button>
+</div>
 <div class="hwbar" id="hwbar"></div>
 <div class="grid" id="totals"></div>
 <div class="panel" id="settingsPanel" style="display:none">
@@ -574,6 +583,37 @@ function showDetail(i,tr){
 }
 renderTable();
 if(DATA.sessions.length)showDetail(DATA.sessions.length-1,$('#tbl tbody tr:last-child'));
+
+// ── exports (client-side, offline) ──────────────────────────────────────────
+function download(name,blob){const u=URL.createObjectURL(blob);const a=document.createElement('a');
+  a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1500);}
+const STAMP=DATA.generated.replace(/[^0-9]/g,'').slice(0,12);
+function toCsv(){
+  const g=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
+  const esc=v=>{v=(v==null?'':''+v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+  const cols=[['When','datetime'],['Zone','label'],['Build','build'],['Region','region'],
+    ['Runtime','runtime_key'],['Duration_s','duration_s'],['Avg','fps.avg'],['Median','fps.median'],
+    ['1%low','fps.p1'],['0.1%low','fps.p01'],['Min','fps.min'],['Max','fps.max'],
+    ['Frametime_ms','frametime.avg'],['GPU%','load.gpu_avg'],['CPU%','load.cpu_avg'],
+    ['Bottleneck','bottleneck'],['GPUtemp','temps.gpu_avg'],['GPUpeak','temps.gpu_peak'],
+    ['VRAMpeak_GB','vram.peak'],['Events','__ev'],['ServerDrops','__drop'],['File','file']];
+  const out=[cols.map(c=>c[0]).join(',')];
+  DATA.sessions.forEach(s=>out.push(cols.map(([_,p])=>
+    p==='__ev'?(s.events||[]).length:
+    p==='__drop'?(s.events||[]).filter(e=>e.sev==='bad').length:
+    esc(g(s,p))).join(',')));
+  return out.join('\n');
+}
+$('#expCsv').onclick=()=>download(`sc-telemetry-${STAMP}.csv`,
+  new Blob([toCsv()],{type:'text/csv'}));
+$('#expImg').onclick=function(){
+  if(typeof html2canvas==='undefined'){alert('Image library not loaded (offline?). A screenshot works too.');return;}
+  const b=this, old=b.textContent; b.disabled=true; b.textContent='rendering…';
+  html2canvas(document.querySelector('.wrap'),{backgroundColor:'#0e0f13',scale:2,useCORS:true,logging:false})
+    .then(c=>c.toBlob(bl=>{download(`sc-telemetry-${STAMP}.jpg`,bl);b.disabled=false;b.textContent=old;},'image/jpeg',0.92))
+    .catch(e=>{b.disabled=false;b.textContent=old;alert('Image export failed: '+e.message+'\nA screenshot works too.');});
+};
+
 // live-reload when served via --serve (no-op when opened as a file://)
 if(location.protocol.startsWith('http')){
   let _tok=null;
@@ -587,25 +627,29 @@ def _resource(name):
     base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
 
-_CHARTJS = None
-def _chartjs_tag():
-    """Inline the vendored Chart.js for an offline, self-contained file; fall
-    back to the CDN if the vendored copy isn't present."""
-    global _CHARTJS
-    if _CHARTJS is None:
+_ASSETS = {}
+def _script_tag(filename, cdn):
+    """Inline a vendored JS lib for an offline, self-contained file; fall back to
+    the CDN if the vendored copy isn't present."""
+    if filename not in _ASSETS:
         try:
-            with open(_resource("chart.min.js"), encoding="utf-8") as fh:
-                _CHARTJS = "<script>" + fh.read() + "</script>"
+            with open(_resource(filename), encoding="utf-8") as fh:
+                _ASSETS[filename] = "<script>" + fh.read() + "</script>"
         except OSError:
-            _CHARTJS = ('<script src="https://cdn.jsdelivr.net/npm/'
-                        'chart.js@4.4.1/dist/chart.umd.min.js"></script>')
-    return _CHARTJS
+            _ASSETS[filename] = f'<script src="{cdn}"></script>'
+    return _ASSETS[filename]
 
 def render_html(data, title):
-    return (HTML.replace("__CHARTJS__", _chartjs_tag())
-                .replace("__DATA_JSON__", json.dumps(data))
-                .replace("__TITLE__", title)
-                .replace("__GEN__", data["generated"]))
+    return (HTML
+            .replace("__CHARTJS__", _script_tag(
+                "chart.min.js",
+                "https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"))
+            .replace("__HTML2CANVAS__", _script_tag(
+                "html2canvas.min.js",
+                "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"))
+            .replace("__DATA_JSON__", json.dumps(data))
+            .replace("__TITLE__", title)
+            .replace("__GEN__", data["generated"]))
 
 def render(data, out, title):
     Path(out).parent.mkdir(parents=True, exist_ok=True)
