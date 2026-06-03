@@ -16,6 +16,7 @@ else
 fi
 
 "$PYI" --onefile --clean --name sc-telemetry \
+  --add-data "chart.min.js:." \
   --hidden-import scpaths --hidden-import settings \
   --hidden-import gamelog  --hidden-import mango \
   --hidden-import linuxenv \

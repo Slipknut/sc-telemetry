@@ -232,7 +232,7 @@ HTML = r"""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>__TITLE__</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+__CHARTJS__
 <style>
 :root{--bg:#0e0f13;--card:#171922;--card2:#1e212c;--fg:#e6e8ef;--mut:#8b90a0;
 --accent:#7c5cff;--gpu:#4fb0ff;--cpu:#ff7a59;--good:#46d18a;--warn:#ffcf5c;--bad:#ff5d6c;--line:#2a2e3b}
@@ -453,14 +453,102 @@ function showDetail(i,tr){
 }
 renderTable();
 if(DATA.sessions.length)showDetail(DATA.sessions.length-1,$('#tbl tbody tr:last-child'));
+// live-reload when served via --serve (no-op when opened as a file://)
+if(location.protocol.startsWith('http')){
+  let _tok=null;
+  setInterval(async()=>{try{const t=await(await fetch('poll')).text();
+    if(_tok===null)_tok=t;else if(t!==_tok)location.reload();}catch(e){}},3000);
+}
 </script></body></html>"""
 
-def render(data, out, title):
-    html = (HTML.replace("__DATA_JSON__", json.dumps(data))
+def _resource(name):
+    """Path to a bundled asset (works both from source and PyInstaller binary)."""
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+_CHARTJS = None
+def _chartjs_tag():
+    """Inline the vendored Chart.js for an offline, self-contained file; fall
+    back to the CDN if the vendored copy isn't present."""
+    global _CHARTJS
+    if _CHARTJS is None:
+        try:
+            with open(_resource("chart.min.js"), encoding="utf-8") as fh:
+                _CHARTJS = "<script>" + fh.read() + "</script>"
+        except OSError:
+            _CHARTJS = ('<script src="https://cdn.jsdelivr.net/npm/'
+                        'chart.js@4.4.1/dist/chart.umd.min.js"></script>')
+    return _CHARTJS
+
+def render_html(data, title):
+    return (HTML.replace("__CHARTJS__", _chartjs_tag())
+                .replace("__DATA_JSON__", json.dumps(data))
                 .replace("__TITLE__", title)
                 .replace("__GEN__", data["generated"]))
+
+def render(data, out, title):
     Path(out).parent.mkdir(parents=True, exist_ok=True)
-    Path(out).write_text(html, encoding="utf-8")
+    Path(out).write_text(render_html(data, title), encoding="utf-8")
+
+def _logs_token(logs_dir):
+    """Cheap change-token for the logs dir: capture/label count + total mtime.
+    Changes whenever a capture or label is added/updated → drives live-reload."""
+    t, n = 0.0, 0
+    for f in glob.glob(os.path.join(logs_dir, "*")) + \
+             glob.glob(os.path.join(logs_dir, "runtime", "*")):
+        if f.rsplit(".", 1)[-1] in ("csv", "label", "txt", "json"):
+            try: t += os.path.getmtime(f); n += 1
+            except OSError: pass
+    return f"{n}:{t:.0f}"
+
+def serve(logs_dir, channels, sc_dir, title, port=8000):
+    """Run a local dashboard that rebuilds on each request and tells the page to
+    reload when new captures land. Bound to localhost only."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass                  # quiet
+        def _send(self, code, ctype, body):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def do_GET(self):
+            p = self.path.split("?", 1)[0].rstrip("/")
+            if p.endswith("poll"):
+                self._send(200, "text/plain; charset=utf-8",
+                           _logs_token(logs_dir).encode()); return
+            if p in ("", "/"):
+                try:
+                    html = render_html(build_data(logs_dir, channels, sc_dir), title)
+                    self._send(200, "text/html; charset=utf-8", html.encode("utf-8"))
+                except Exception as e:
+                    self._send(500, "text/plain; charset=utf-8",
+                               f"build error: {e}".encode())
+                return
+            self._send(404, "text/plain; charset=utf-8", b"not found")
+
+    srv = None
+    for p in range(port, port + 10):                     # find a free port
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", p), H); port = p; break
+        except OSError:
+            continue
+    if srv is None:
+        print(f"  ! no free port in {port}–{port+9}"); return
+    url = f"http://127.0.0.1:{port}/"
+    print(f"\n  ▶ dashboard live at {url}")
+    print(f"    watching {logs_dir} — capture a session and the page refreshes itself.")
+    print("    Ctrl-C to stop.\n")
+    import webbrowser
+    webbrowser.open(url)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        print("\n  stopped.")
+    finally:
+        srv.server_close()
 
 def _write_label(csv_path, text):
     base = re.sub(r"\.csv$", "", csv_path)
@@ -545,6 +633,10 @@ def main():
                     help="label captures: no args = interactively tag every untagged "
                          "capture; with CSV file(s) = apply --label to them, then exit")
     ap.add_argument("--label", help="label text to apply to the --tag CSV file(s)")
+    ap.add_argument("--serve", action="store_true",
+                    help="run a live local dashboard (auto-refreshes as captures land) "
+                         "instead of writing a file")
+    ap.add_argument("--port", type=int, default=8000, help="port for --serve (default 8000)")
     ap.add_argument("--open", action="store_true", help="open the dashboard when done")
     a = ap.parse_args()
 
@@ -587,11 +679,15 @@ def main():
                 c['channel'] + ("" if c['has_logs'] else " (no logs)") for c in channels) or "none"))
         else:
             print("  (no SC folder found — using MangoHud data only; pass --sc PATH or --no-sc)")
+    sc = sc_dir if not a.no_sc and scpaths else None
+    if a.serve:
+        serve(a.logs, channels, sc, a.title, a.port)
+        return
     out = a.out
     frozen = getattr(sys, "frozen", False)   # running as a PyInstaller binary
     if frozen and out == "dist/dashboard.html":
         out = os.path.expanduser("~/sc-telemetry-dashboard.html")
-    data = build_data(a.logs, channels, sc_dir if not a.no_sc and scpaths else None)
+    data = build_data(a.logs, channels, sc)
     render(data, out, a.title)
     print(f"✓ {data['totals']['sessions']} session(s), {data['totals']['hours']}h → {out}")
     if a.open or frozen:                     # bare binary run → open the result

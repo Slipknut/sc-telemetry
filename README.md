@@ -59,10 +59,17 @@ most-recently-played one for tagging + settings.
 
 ```bash
 sc-telemetry                 # auto-detect, build dashboard, open it
+sc-telemetry --serve         # live dashboard at localhost — auto-refreshes as captures land
 sc-telemetry --sc /path/to/StarCitizen
 sc-telemetry --logs ~/sc-fps-logs --out dashboard.html --open
 sc-telemetry --no-sc         # MangoHud data only (skip Game.log/settings)
 ```
+
+The dashboard is a **single self-contained HTML file** (Chart.js is inlined — no
+CDN, works fully offline) that you can open locally, host, or share as-is.
+`--serve` instead runs it as a live local app: it rebuilds on each load and the
+page reloads itself when a new capture appears, so you can alt-tab out mid-session
+and watch results roll in.
 
 ## Capture frames (MangoHud)
 
@@ -116,7 +123,8 @@ never writes it out. Dashboards are safe to share as-is.
 - [ ] Windows capture import (CapFrameX / PresentMon CSV + JSON → same session model)
 - [ ] `level_stats` join → entity count + main-thread-vs-GPU "why"
 - [ ] Screenshot thumbnails per capture
-- [ ] Community aggregation (crowd FPS-by-zone/build) · trend-across-patches · offline Chart.js
+- [x] Live local dashboard (`--serve`, auto-refresh) + offline (inlined Chart.js)
+- [ ] Community aggregation (crowd FPS-by-zone/build) · trend-across-patches
 
 ## License
 

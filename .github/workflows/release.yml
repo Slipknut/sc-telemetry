@@ -19,8 +19,10 @@ jobs:
         include:
           - os: ubuntu-latest
             asset: sc-telemetry-linux-x86_64
+            sep: ":"
           - os: windows-latest
             asset: sc-telemetry-windows-x86_64.exe
+            sep: ";"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +33,7 @@ jobs:
       - name: Build binary
         run: >
           pyinstaller --onefile --name sc-telemetry
+          --add-data "chart.min.js${{ matrix.sep }}."
           --hidden-import scpaths --hidden-import settings
           --hidden-import gamelog --hidden-import mango --hidden-import linuxenv
           sc_telemetry.py
