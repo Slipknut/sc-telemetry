@@ -42,6 +42,15 @@ _CODES = {"HUR": "Hurston", "ARC": "ArcCorp", "CRU": "Crusader", "MIC": "microTe
 _NAMES = {"lorville": "Lorville", "newbabbage": "New Babbage", "area18": "Area 18",
           "orison": "Orison", "grimhex": "GrimHex", "arccorp": "ArcCorp",
           "microtech": "microTech"}
+# orbital rest stops: id is RR_<planet>_LEO (LEO = the planet's main orbital
+# station; L1–L5 are Lagrange stations handled generically below).
+_ORBITAL = {"HUR": "Everus Harbor", "ARC": "Baijini Point",
+            "MIC": "Port Tressler", "CRU": "Seraphim Station"}
+
+def _body_name(code):
+    if code in _CODES and _CODES[code]:
+        return _CODES[code]
+    return "Pyro" if re.fullmatch(r"P[1-6]", code) else code
 
 def _camel(s):
     s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", s)        # word→Word
@@ -58,6 +67,12 @@ def _prettify(loc):                       # "Stanton4_NewBabbage" -> "New Babbag
         pair = toks[toks.index("JP") + 1] if toks.index("JP") + 1 < len(toks) else ""
         sysn = re.findall(r"[A-Z][a-z]+", pair)
         return f"{sysn[0]}–{sysn[1]} Jump Point" if len(sysn) >= 2 else "Jump Point"
+    if toks[:1] == ["RR"] and len(toks) >= 3:    # orbital / Lagrange stations
+        body, slot = toks[1], toks[2]
+        if slot == "LEO" and body in _ORBITAL:
+            return _ORBITAL[body]                # RR_HUR_LEO → Everus Harbor
+        if re.fullmatch(r"L\d", slot):
+            return f"{_body_name(body)} {slot} Station"   # RR_HUR_L1 → Hurston L1 Station
     if "Outpost" in toks:                  # procedural outpost id → "<System> Outpost"
         return f"{system} Outpost".strip() if system else "Outpost"
     if len(toks) == 1 and toks[0].lower() in _NAMES:
