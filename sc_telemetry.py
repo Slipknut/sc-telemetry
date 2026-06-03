@@ -12,7 +12,7 @@ Optional per-capture content tag: drop a sibling text file next to a capture,
 e.g. `mangoapp_2026-06-01_23-29-13.label` containing "Onyx Facility", and it'll
 be used as the session's label/zone in the dashboard.
 """
-import csv, json, os, glob, argparse, statistics, datetime, re, sys
+import csv, json, os, glob, argparse, statistics, datetime, re, sys, subprocess
 from pathlib import Path
 try:
     import scpaths, gamelog, mango, linuxenv
@@ -215,6 +215,12 @@ def build_data(logs_dir, channels=None, sc_dir=None):
     sessions = [s for s in (analyze(f, logidx, rtidx) for f in files) if s]
     sessions.sort(key=lambda s: s["datetime"])
     total_s = sum(s["duration_s"] for s in sessions)
+    if sessions and any(s["hw"].get("gpu", "?") in ("?", "") for s in sessions):
+        gpu = detect_gpu()                       # mangoapp leaves CSV gpu blank → probe host
+        if gpu:
+            for s in sessions:
+                if s["hw"].get("gpu", "?") in ("?", ""):
+                    s["hw"]["gpu"] = gpu
     play_sessions = _group_play_sessions(sessions)
     hw = sessions[-1]["hw"] if sessions else {"cpu": "?", "gpu": "?"}
     return {
@@ -231,6 +237,34 @@ def build_data(logs_dir, channels=None, sc_dir=None):
         "play_sessions": play_sessions,
         "sessions": sessions,
     }
+
+_GPU = None
+def detect_gpu():
+    """MangoHud's gamescope/mangoapp path leaves the CSV gpu field blank, so when
+    a capture has no GPU name, fall back to probing the host (the machine that
+    generated the dashboard = the gaming rig). Cached. Returns '' if unknown."""
+    global _GPU
+    if _GPU is not None:
+        return _GPU
+    _GPU = ""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+                             capture_output=True, text=True, timeout=4).stdout.strip()
+        if out:
+            _GPU = out.splitlines()[0].strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not _GPU:
+        try:
+            out = subprocess.run(["lspci"], capture_output=True, text=True, timeout=4).stdout
+            for line in out.splitlines():
+                if re.search(r"VGA compatible|3D controller|Display controller", line, re.I):
+                    m = re.search(r"\[([^\]]+)\]", line)        # e.g. [GeForce RTX 3090]
+                    _GPU = (m.group(1) if m else line.split(":", 2)[-1]).strip()
+                    break
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return _GPU
 
 def _group_play_sessions(sessions):
     """Group captures that share one Game.log session (a single game launch) into
