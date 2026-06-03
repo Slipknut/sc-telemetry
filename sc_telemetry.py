@@ -358,6 +358,7 @@ const $=s=>document.querySelector(s);
 const fpsClass=v=>v>=60?'fps-good':v>=40?'fps-mid':'fps-bad';
 const bClass={'GPU-bound':'b-gpu','CPU / engine-bound':'b-cpu','Balanced':'b-bal'};
 const fmtDur=s=>{const m=Math.floor(s/60),sec=Math.round(s%60);return m+'m '+sec+'s';};
+const EVCOL={bad:'#ff5d6c',warn:'#ffcf5c',info:'#8b90a0'};   // server-event colours (used early)
 
 // header
 $('#sub').textContent = DATA.totals.sessions+' sessions logged · generated '+DATA.generated;
@@ -508,7 +509,6 @@ $('#tbl thead').querySelectorAll('th').forEach(th=>th.onclick=()=>{
 // detail + charts
 let cFps,cHist;
 // vertical markers on the FPS chart at server-event times (by severity colour)
-const EVCOL={bad:'#ff5d6c',warn:'#ffcf5c',info:'#8b90a0'};
 const eventPlugin={id:'events',afterDraw(c){
   const evs=c.$events; if(!evs||!evs.length)return;
   const {ctx,chartArea:{top,bottom,left,right}}=c, dur=c.$dur||1;
