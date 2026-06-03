@@ -425,6 +425,9 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
   <button class="btn" id="expCsv" title="Session table → spreadsheet (summary)">⬇ CSV</button>
   <button class="btn" id="expJson" title="Full data → JSON (lossless; re-import for the exact dashboard)">⬇ JSON</button>
   <button class="btn" id="expImg" title="Full dashboard → image (everything, not just the screen)">🖼 JPEG</button>
+  <button class="btn" id="impBtn" title="Load an exported CSV/JSON and view it here">📂 Import</button>
+  <button class="btn" id="impClear" title="Back to this machine's data" style="display:none">✕ Clear import</button>
+  <input type="file" id="impFile" accept=".json,.csv,application/json,text/csv" style="display:none">
 </div>
 <div class="hwbar" id="hwbar"></div>
 <div class="grid" id="totals"></div>
@@ -459,7 +462,18 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 <div class="foot">Generated __GEN__ · sc-telemetry · data from MangoHud (hardware-only, no account/shard PII)</div>
 </div>
 <script>
-const DATA = __DATA_JSON__;
+let DATA = __DATA_JSON__;
+let IMPORTED = false;
+// in-browser import: a picked file is stashed in sessionStorage then the page
+// reloads and renders that data instead of the embedded set (Clear → back).
+try{
+  const imp = sessionStorage.getItem('sc_import');
+  if(imp){
+    const o = JSON.parse(imp);
+    DATA = o.type==='json' ? JSON.parse(o.text) : assembleFromCsv(o.text);
+    DATA.imported = o.name; IMPORTED = true;
+  }
+}catch(e){ try{sessionStorage.removeItem('sc_import');}catch(_){}}
 const $=s=>document.querySelector(s);
 const fpsClass=v=>v>=60?'fps-good':v>=40?'fps-mid':'fps-bad';
 const bClass={'GPU-bound':'b-gpu','CPU / engine-bound':'b-cpu','Balanced':'b-bal'};
@@ -716,6 +730,66 @@ $('#expImg').onclick=function(){
     .then(c=>c.toBlob(bl=>{download(`sc-telemetry-${STAMP}.jpg`,bl);b.disabled=false;b.textContent=old;},'image/jpeg',0.92))
     .catch(e=>{b.disabled=false;b.textContent=old;alert('Image export failed: '+e.message+'\nA screenshot works too.');});
 };
+
+// ── import (client-side): pick a CSV/JSON, stash it, reload to render it ──────
+$('#impBtn').onclick=()=>$('#impFile').click();
+$('#impFile').onchange=function(){
+  const f=this.files&&this.files[0]; if(!f)return;
+  const r=new FileReader();
+  r.onload=()=>{
+    const text=String(r.result);
+    const type=(f.name.toLowerCase().endsWith('.json')||text.trim()[0]==='{')?'json':'csv';
+    try{
+      if(type==='json')JSON.parse(text); else assembleFromCsv(text);   // validate before reload
+      sessionStorage.setItem('sc_import',JSON.stringify({type,text,name:f.name}));
+      location.reload();
+    }catch(e){ alert('Could not import '+f.name+': '+e.message+
+      '\n(For very large files use the CLI: sc-telemetry --import '+f.name+')'); }
+  };
+  r.readAsText(f);
+};
+if(IMPORTED){ $('#impClear').style.display='inline-block'; $('#impBtn').textContent='📂 Import another'; }
+$('#impClear').onclick=()=>{ try{sessionStorage.removeItem('sc_import');}catch(e){} location.reload(); };
+
+// rebuild the data dict from an exported CSV (mirrors the CLI --import for CSV)
+function parseCsv(text){
+  const lines=text.replace(/\r\n/g,'\n').split('\n').filter(l=>l.length);
+  const split=line=>{const o=[];let cur='',q=false;
+    for(let i=0;i<line.length;i++){const c=line[i];
+      if(q){ if(c==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else q=false; } else cur+=c; }
+      else { if(c===','){o.push(cur);cur='';} else if(c==='"')q=true; else cur+=c; } }
+    o.push(cur); return o;};
+  const hdr=split(lines[0]).map(h=>h.trim());
+  return lines.slice(1).map(l=>{const v=split(l),o={};hdr.forEach((h,i)=>o[h]=v[i]!==undefined?v[i]:'');return o;});
+}
+function assembleFromCsv(text){
+  const rows=parseCsv(text), n=v=>{const x=parseFloat(v);return isNaN(x)?0:x;};
+  const sessions=rows.map(r=>{const dt=(r.When||'').trim();return{
+    file:r.File||'',datetime:dt,start_iso:dt?(dt.replace(' ','T')+':00').slice(0,19):'',
+    label:r.Zone||'',build:r.Build||'',region:r.Region||'',runtime_key:r.Runtime||'',
+    duration_s:n(r.Duration_s),
+    fps:{avg:n(r.Avg),median:n(r.Median),min:n(r.Min),max:n(r.Max),p1:n(r['1%low']),p01:n(r['0.1%low'])},
+    frametime:{avg:n(r.Frametime_ms),p99:0,max:0},load:{gpu_avg:n(r['GPU%']),cpu_avg:n(r['CPU%'])},
+    bottleneck:r.Bottleneck||'',temps:{gpu_avg:n(r.GPUtemp),gpu_peak:n(r.GPUpeak),cpu_avg:0,cpu_peak:0},
+    vram:{peak:n(r.VRAMpeak_GB),avg:0},ram_avg:0,samples:0,events:[],session:null,series:null,hist:null,
+    hw:{cpu:'?',gpu:'?'}};});
+  sessions.sort((a,b)=>a.datetime.localeCompare(b.datetime));
+  const groups={};
+  sessions.forEach((s,i)=>{const k=s.session?s.session.start:'solo:'+s.start_iso;
+    (groups[k]=groups[k]||{start:s.start_iso,end:null,build:s.build||'',region:s.region||'',caps:[]}).caps.push(i);});
+  const play=Object.values(groups).sort((a,b)=>(''+a.start).localeCompare(''+b.start)).map(g=>{
+    const caps=g.caps.map(i=>sessions[i]);
+    return {...g,captured_s:Math.round(caps.reduce((a,c)=>a+c.duration_s,0)*10)/10,
+      n_captures:caps.length,n_events:0,n_drops:0};});
+  const rks={}; sessions.forEach(s=>{if(s.runtime_key)rks[s.runtime_key]={chips:[]};});
+  return {generated:new Date().toISOString().slice(0,16).replace('T',' '),
+    hw:{cpu:'?',gpu:'?'},
+    totals:{sessions:sessions.length,
+      hours:Math.round(sessions.reduce((a,s)=>a+s.duration_s,0)/360)/10,
+      samples:0},
+    active_channel:'',channels:[],settings:{},runtime:null,runtimes:rks,
+    play_sessions:play,sessions};
+}
 
 // live-reload when served via --serve (no-op when opened as a file://)
 if(location.protocol.startsWith('http')){

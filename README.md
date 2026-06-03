@@ -113,7 +113,12 @@ The dashboard has an export toolbar:
 - **JSON** — the full dataset, lossless (re-import for the *exact* dashboard).
 - **JPEG** — the whole dashboard as one image (everything, not just the screen).
 
-Anyone with the app can view shared data:
+Anyone with the app can view shared data — two ways:
+
+**In the dashboard:** click **📂 Import** and pick a `.json` or `.csv`. The view
+re-renders with that data; **✕ Clear import** returns to yours.
+
+**Or from the CLI** (also merges several files into one dashboard):
 ```bash
 sc-telemetry --import friend.json            # full detail (trace, events, timeline)
 sc-telemetry --import friend.csv             # summary view (table + comparisons)
