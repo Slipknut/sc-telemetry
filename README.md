@@ -8,7 +8,7 @@ It auto-detects your Star Citizen install, reads each capture's **zone, build,
 and graphics settings**, classifies the **bottleneck** (CPU/engine vs GPU), and
 writes a single `dashboard.html` you can open locally or host anywhere.
 
-![demo](docs/demo.png)
+![sc-telemetry dashboard](docs/demo.jpg)
 
 ## What it shows
 
