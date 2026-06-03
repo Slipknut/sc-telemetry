@@ -25,9 +25,48 @@ CITY = ["Lorville","New Babbage","NewBabbage","Area18","Area 18","Orison",
 REGION = {"euw": "EU-West", "use": "US-East", "usw": "US-West", "aus": "Australia",
           "apse": "Asia-SE", "euc": "EU-Central"}
 
+# first segment of a location id is the system+body code (Stanton1, Stanton4b,
+# Pyro3, …) — informative as a system, but not the place name.
+_BODY = re.compile(r"^(Stanton|Pyro|Nyx|Terra|Magnus|Castra|Odin)\w*$", re.I)
+# short codes that show up in space/station/transit ids
+_CODES = {"HUR": "Hurston", "ARC": "ArcCorp", "CRU": "Crusader", "MIC": "microTech",
+          "JP": "Jump Point", "LEO": "orbit", "RR": ""}
+# proper names that must not be camel-split or title-cased
+_NAMES = {"lorville": "Lorville", "newbabbage": "New Babbage", "area18": "Area 18",
+          "orison": "Orison", "grimhex": "GrimHex", "arccorp": "ArcCorp",
+          "microtech": "microTech"}
+
+def _camel(s):
+    s = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", s)        # word→Word
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", s)      # ACRONYMWord → ACRONYM Word
+    s = re.sub(r"(?<=[A-Za-z])(\d{2,})", r" \1", s)       # Area045 → Area 045
+    return s
+
 def _prettify(loc):                       # "Stanton4_NewBabbage" -> "New Babbage"
-    part = loc.split("_", 1)[1] if "_" in loc else loc
-    return re.sub(r"(?<=[a-z])(?=[A-Z0-9])", " ", part).strip()
+    toks = loc.split("_")
+    system = None
+    if toks and _BODY.match(toks[0]):
+        system = re.match(r"[A-Za-z]+", toks.pop(0)).group(0).title()
+    if "JP" in toks:                       # RR_JP_StantonPyro → "Stanton–Pyro Jump Point"
+        pair = toks[toks.index("JP") + 1] if toks.index("JP") + 1 < len(toks) else ""
+        sysn = re.findall(r"[A-Z][a-z]+", pair)
+        return f"{sysn[0]}–{sysn[1]} Jump Point" if len(sysn) >= 2 else "Jump Point"
+    if "Outpost" in toks:                  # procedural outpost id → "<System> Outpost"
+        return f"{system} Outpost".strip() if system else "Outpost"
+    if len(toks) == 1 and toks[0].lower() in _NAMES:
+        return _NAMES[toks[0].lower()]
+    out = []
+    for t in toks:
+        if t in _CODES:
+            if _CODES[t]:
+                out.append(_CODES[t])
+        elif t.lower() in _NAMES:
+            out.append(_NAMES[t.lower()])
+        elif re.fullmatch(r"P[1-6]", t):   # Pyro body shorthand
+            out.append("Pyro")
+        else:
+            out.append(_camel(t))
+    return re.sub(r"\s+", " ", " ".join(out)).strip() or loc
 
 def _region(shard):
     if not shard or shard == "local_shard":
