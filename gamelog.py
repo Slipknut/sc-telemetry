@@ -17,6 +17,13 @@ LOCINV = re.compile(r"RequestLocationInventory>.*?Location\[([^\]]+)\]")
 SHARD = re.compile(r"Shard Id:\s*([a-z0-9_]+)", re.I)
 CLIST = re.compile(r"Changelist:\s*(\d+)")
 BRANCH = re.compile(r"Branch:\s*\S*?(\d+\.\d+\.\d+[\w.-]*)")
+# server-health events
+DISCONN = re.compile(r'<Channel Disconnected>\s*cause=(\d+)\s*reason="([^"]*)"')
+REROUTE = "Local Route Guard - Server Rerouted"      # bursty → time-clustered below
+MENU = "Loading screen for Frontend_Main"            # arrived back at the main menu
+# disconnect reasons that mean *you* left (vs. the server dropping you)
+_VOLUNTARY = re.compile(r"player requested|requested disconnect|ExitToMenu|"
+                        r"disconnect light", re.I)
 MON = {m: i for i, m in enumerate(
     ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"], 1)}
 CITY = ["Lorville","New Babbage","NewBabbage","Area18","Area 18","Orison",
@@ -132,7 +139,9 @@ def _offset(path, local_start):
     return datetime.timedelta(hours=0)
 
 def enrich(capture_start_local, duration_s, sessions):
-    """Return {build, branch, region, zone} for a capture, or {} if no match."""
+    """Return {build, branch, region, zone, events} for a capture, or {} if no
+    match. `events` are server-health markers (disconnect/reroute/menu) that fall
+    inside the capture, each with `at` = seconds into the capture."""
     end_local = capture_start_local + datetime.timedelta(seconds=duration_s)
     sess = next((s for s in sessions
                  if s["start"] <= capture_start_local <= s["end"] + datetime.timedelta(minutes=5)),
@@ -141,10 +150,18 @@ def enrich(capture_start_local, duration_s, sessions):
         return {}
     off = _offset(sess["path"], sess["start"])
     win0 = (capture_start_local - off) - datetime.timedelta(minutes=2)
+    ev0 = capture_start_local - off                  # event window = the capture itself
     win1 = (end_local - off)
     build, branch, shard = sess["build"], None, None
     loc_anchor, city_count = None, {}
     is_ac = False
+    events, last_reroute = [], None
+
+    def add(t, kind, sev, detail):
+        if len(events) < 80:
+            secs = round((t - ev0).total_seconds(), 1)
+            events.append({"at": max(0.0, secs), "kind": kind, "sev": sev, "detail": detail})
+
     try:
         with open(sess["path"], errors="ignore") as fh:
             for line in fh:
@@ -175,6 +192,22 @@ def enrich(capture_start_local, duration_s, sessions):
                     for c in CITY:
                         if c in line:
                             city_count[c] = city_count.get(c, 0) + 1
+                # server-health events (only within the capture itself)
+                if ev0 <= t <= win1:
+                    dm = DISCONN.search(line)
+                    if dm:
+                        cause, reason = dm.group(1), dm.group(2)
+                        if _VOLUNTARY.search(reason):
+                            add(t, "quit", "info", f"Left to menu ({reason})")
+                        else:
+                            add(t, "disconnect", "bad",
+                                f"Server drop — {reason} (code {cause})")
+                    elif REROUTE in line:
+                        if last_reroute is None or (t - last_reroute).total_seconds() > 20:
+                            add(t, "reroute", "warn", "Server reroute / recovery")
+                        last_reroute = t
+                    elif MENU in line:
+                        add(t, "menu", "info", "Returned to main menu")
     except OSError:
         return {}
     # decide zone
@@ -188,5 +221,12 @@ def enrich(capture_start_local, duration_s, sessions):
         zone = "Stanton (PU)"              # in a PU shard but no location line in window
     else:
         zone = ""                          # menu/launcher/loading — nothing to claim
+    events.sort(key=lambda e: e["at"])
+    deduped = []                                       # drop dupes logged on 2 channels
+    for e in events:
+        if deduped and deduped[-1]["detail"] == e["detail"] \
+           and abs(deduped[-1]["at"] - e["at"]) <= 1.5:
+            continue
+        deduped.append(e)
     return {"build": (branch or "?") + (f" ({build})" if build else ""),
-            "region": _region(shard), "zone": zone}
+            "region": _region(shard), "zone": zone, "events": deduped}

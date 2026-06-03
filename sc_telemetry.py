@@ -147,6 +147,7 @@ def analyze(path, logidx=None, rtidx=None):
     return {
         "file": os.path.basename(path),
         "label": manual or enr.get("zone") or "",
+        "events": enr.get("events", []),
         "runtime_key": rt_key,
         "build": enr.get("build", ""),
         "region": enr.get("region") or "",
@@ -271,6 +272,11 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 .qbar .ql{flex:1;color:var(--mut)}.qbar .qv{width:78px;text-align:right;font-weight:600}
 .qtrack{width:80px;height:6px;background:var(--line);border-radius:3px;overflow:hidden}
 .qfill{height:100%;border-radius:3px}
+.events{margin-top:16px}
+.events h3{font-size:13px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em;margin:0 0 8px}
+.ev{font-size:13px;padding:5px 10px;border-left:3px solid var(--line);margin-bottom:4px;background:var(--card2);border-radius:0 6px 6px 0}
+.ev-t{display:inline-block;min-width:64px;color:var(--mut);font-variant-numeric:tabular-nums}
+.ev-bad{border-left-color:#ff5d6c}.ev-warn{border-left-color:#ffcf5c}.ev-info{border-left-color:#3a3f4d;opacity:.8}
 </style></head>
 <body><div class="wrap">
 <h1>🛰️ __TITLE__</h1>
@@ -299,6 +305,7 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
     <div><div class="cwrap"><canvas id="cFps"></canvas></div></div>
     <div><div class="cwrap"><canvas id="cHist"></canvas></div></div>
   </div>
+  <div id="devents" class="events"></div>
 </div>
 <div class="foot">Generated __GEN__ · sc-telemetry · data from MangoHud (hardware-only, no account/shard PII)</div>
 </div>
@@ -390,13 +397,14 @@ let cRuntime;
 // table
 const COLS=[['datetime','When'],['label','Zone'],['runtime_key','Runtime'],['duration_s','Dur'],['fps.avg','Avg'],
 ['fps.p1','1% low'],['fps.p01','0.1% low'],['load.gpu_avg','GPU%'],['load.cpu_avg','CPU%'],
-['bottleneck','Bottleneck'],['temps.gpu_peak','GPU°'],['vram.peak','VRAM']];
+['bottleneck','Bottleneck'],['events','Server'],['temps.gpu_peak','GPU°'],['vram.peak','VRAM']];
 const get=(o,p)=>p.split('.').reduce((a,k)=>a&&a[k],o);
 let sortKey='datetime',sortDir=1;
 $('#tbl thead').innerHTML='<tr>'+COLS.map(([k,l])=>`<th data-k="${k}">${l}</th>`).join('')+'</tr>';
 function renderTable(){
   const rows=[...DATA.sessions].sort((a,b)=>{
     let x=get(a,sortKey),y=get(b,sortKey);
+    if(sortKey==='events'){x=(a.events||[]).length;y=(b.events||[]).length;}
     if(typeof x==='string')return sortDir*x.localeCompare(y);
     return sortDir*((x||0)-(y||0));});
   $('#tbl tbody').innerHTML=rows.map(s=>{
@@ -405,6 +413,7 @@ function renderTable(){
       if(k==='label')return `<td>${s.label||'<span style=color:#555>—</span>'}</td>`;
       if(k==='duration_s')return `<td>${fmtDur(s.duration_s)}</td>`;
       if(k==='bottleneck')return `<td><span class="badge ${bClass[s.bottleneck]}">${s.bottleneck}</span></td>`;
+      if(k==='events')return `<td>${evSummary(s.events)}</td>`;
       if(k==='fps.avg'||k==='fps.p1'||k==='fps.p01'){const v=get(s,k);return `<td class="${fpsClass(v)}">${v}</td>`;}
       if(k==='vram.peak')return `<td>${get(s,k)} GB</td>`;
       if(k==='temps.gpu_peak')return `<td>${get(s,k)}°</td>`;
@@ -417,6 +426,31 @@ $('#tbl thead').querySelectorAll('th').forEach(th=>th.onclick=()=>{
 
 // detail + charts
 let cFps,cHist;
+// vertical markers on the FPS chart at server-event times (by severity colour)
+const EVCOL={bad:'#ff5d6c',warn:'#ffcf5c',info:'#8b90a0'};
+const eventPlugin={id:'events',afterDraw(c){
+  const evs=c.$events; if(!evs||!evs.length)return;
+  const {ctx,chartArea:{top,bottom,left,right}}=c, dur=c.$dur||1;
+  ctx.save();
+  evs.forEach(e=>{
+    const x=left+Math.max(0,Math.min(1,e.at/dur))*(right-left);
+    ctx.strokeStyle=EVCOL[e.sev]||'#8b90a0';ctx.lineWidth=1;ctx.globalAlpha=.65;
+    ctx.setLineDash(e.sev==='info'?[3,3]:[]);
+    ctx.beginPath();ctx.moveTo(x,top);ctx.lineTo(x,bottom);ctx.stroke();
+  });
+  ctx.restore();
+}};
+// compact per-session events summary (for the table cell)
+function evSummary(evs){
+  if(!evs||!evs.length)return '<span style="color:var(--mut)">—</span>';
+  const n={bad:0,warn:0,info:0}; evs.forEach(e=>n[e.sev]++);
+  const bits=[];
+  if(n.bad) bits.push(`<span style="color:${EVCOL.bad}">⛔${n.bad}</span>`);
+  if(n.warn)bits.push(`<span style="color:${EVCOL.warn}">↻${n.warn}</span>`);
+  if(n.info)bits.push(`<span style="color:var(--mut)">·${n.info}</span>`);
+  return bits.join(' ');
+}
+
 function showDetail(i,tr){
   document.querySelectorAll('#tbl tbody tr').forEach(r=>r.classList.remove('sel'));
   if(tr)tr.classList.add('sel');
@@ -434,16 +468,22 @@ function showDetail(i,tr){
   ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}" style="font-size:${(''+v).length>10?'16px':'24px'}">${v}</div></div>`).join('');
   if(cFps)cFps.destroy(); if(cHist)cHist.destroy();
   const gx={grid:{color:'#2a2e3b'},ticks:{color:'#8b90a0'}};
-  cFps=new Chart($('#cFps'),{type:'line',data:{labels:s.series.t,
+  cFps=new Chart($('#cFps'),{type:'line',plugins:[eventPlugin],data:{labels:s.series.t,
     datasets:[
       {label:'FPS',data:s.series.fps,borderColor:'#7c5cff',backgroundColor:'#7c5cff22',
        borderWidth:1.4,pointRadius:0,fill:true,yAxisID:'y',tension:.2},
       {label:'Frametime (ms)',data:s.series.frametime,borderColor:'#ff7a59',
        borderWidth:1,pointRadius:0,yAxisID:'y1',tension:.2}]},
     options:{animation:false,responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'#e6e8ef'}},title:{display:true,text:'FPS & frametime over session (s)',color:'#8b90a0'}},
+      plugins:{legend:{labels:{color:'#e6e8ef'}},title:{display:true,text:'FPS & frametime over session (s) — vertical lines = server events',color:'#8b90a0'}},
       scales:{x:gx,y:{...gx,position:'left',title:{display:true,text:'FPS',color:'#8b90a0'}},
         y1:{...gx,position:'right',grid:{drawOnChartArea:false},title:{display:true,text:'ms',color:'#8b90a0'}}}}});
+  cFps.$events=s.events||[]; cFps.$dur=s.duration_s||1; cFps.update();
+  // events list under the charts
+  const evs=s.events||[];
+  $('#devents').innerHTML = evs.length ? '<h3>Server events</h3>'+evs.map(e=>
+    `<div class="ev ev-${e.sev}"><span class="ev-t">+${fmtDur(e.at)}</span> ${e.detail}</div>`).join('')
+    : '';
   const labels=s.hist.edges.slice(0,-1).map((e,j)=>e+'–'+s.hist.edges[j+1]);
   cHist=new Chart($('#cHist'),{type:'bar',data:{labels,datasets:[{label:'frames',
     data:s.hist.counts,backgroundColor:s.hist.edges.slice(0,-1).map(e=>e>=60?'#46d18a':e>=40?'#ffcf5c':'#ff5d6c')}]},
