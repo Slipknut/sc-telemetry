@@ -106,11 +106,28 @@ runtime they ran under (by timestamp), and once you've played on ≥2 runtimes t
 dashboard adds a **By runtime — avg FPS** chart. Don't use LUG? Add this to your
 launch script yourself: `sc-telemetry --stamp-runtime`.
 
+## Share & import
+
+The dashboard has an export toolbar:
+- **CSV** — the session table, for spreadsheets (summary stats per capture).
+- **JSON** — the full dataset, lossless (re-import for the *exact* dashboard).
+- **JPEG** — the whole dashboard as one image (everything, not just the screen).
+
+Anyone with the app can view shared data:
+```bash
+sc-telemetry --import friend.json            # full detail (trace, events, timeline)
+sc-telemetry --import friend.csv             # summary view (table + comparisons)
+sc-telemetry --import a.csv b.csv c.json     # merge several people into one dashboard
+```
+JSON restores everything; CSV is summary-only (per-second trace, histogram and the
+event timeline aren't carried in a CSV). Merging multiple files is the seed for
+crowd-sourced, cross-player comparisons.
+
 ## Privacy
 
 Captures contain only **hardware/system info** — **no account, handle, or shard
 IDs**. The Game.log join reads your handle *only* to match location lines and
-never writes it out. Dashboards are safe to share as-is.
+never writes it out. Dashboards and exports are safe to share as-is.
 
 ## Roadmap
 
@@ -124,6 +141,7 @@ never writes it out. Dashboards are safe to share as-is.
 - [ ] `level_stats` join → entity count + main-thread-vs-GPU "why"
 - [ ] Screenshot thumbnails per capture
 - [x] Live local dashboard (`--serve`, auto-refresh) + offline (inlined Chart.js)
+- [x] Export (CSV / JSON / full-page JPEG) + import & merge (`--import`)
 - [ ] Community aggregation (crowd FPS-by-zone/build) · trend-across-patches
 
 ## License

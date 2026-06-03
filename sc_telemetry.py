@@ -259,6 +259,68 @@ def _group_play_sessions(sessions):
                     "n_captures": len(caps), "n_events": nev, "n_drops": bad})
     return out
 
+def _sessions_from_csv(fh):
+    """Rebuild (summary-only) session dicts from an exported CSV. No per-second
+    series / histogram / event timeline — those aren't in the CSV."""
+    out = []
+    for r in csv.DictReader(fh):
+        def f(k):
+            try: return float(r.get(k, "") or 0)
+            except ValueError: return 0.0
+        dt = (r.get("When") or "").strip()
+        out.append({
+            "file": r.get("File", ""), "datetime": dt,
+            "start_iso": (dt.replace(" ", "T") + ":00")[:19] if dt else "",
+            "label": r.get("Zone", ""), "build": r.get("Build", ""),
+            "region": r.get("Region", ""), "runtime_key": r.get("Runtime", ""),
+            "duration_s": f("Duration_s"),
+            "fps": {"avg": f("Avg"), "median": f("Median"), "min": f("Min"),
+                    "max": f("Max"), "p1": f("1%low"), "p01": f("0.1%low")},
+            "frametime": {"avg": f("Frametime_ms"), "p99": 0, "max": 0},
+            "load": {"gpu_avg": f("GPU%"), "cpu_avg": f("CPU%")},
+            "bottleneck": r.get("Bottleneck", ""),
+            "temps": {"gpu_avg": f("GPUtemp"), "gpu_peak": f("GPUpeak"),
+                      "cpu_avg": 0, "cpu_peak": 0},
+            "vram": {"peak": f("VRAMpeak_GB"), "avg": 0},
+            "ram_avg": 0, "samples": 0, "events": [], "session": None,
+            "series": None, "hist": None, "hw": {"cpu": "?", "gpu": "?"},
+        })
+    return out
+
+def import_data(paths):
+    """Build a dashboard data dict from exported CSV/JSON file(s). JSON restores
+    everything; CSV gives a summary view. Multiple files merge into one dashboard."""
+    sessions, src = [], []
+    for p in paths:
+        p = os.path.expanduser(p)
+        try:
+            with open(p, encoding="utf-8") as fh:
+                if fh.read(64).lstrip().startswith("{"):       # JSON
+                    fh.seek(0)
+                    sessions += json.load(fh).get("sessions", [])
+                else:                                          # CSV
+                    fh.seek(0)
+                    sessions += _sessions_from_csv(fh)
+            src.append(os.path.basename(p))
+        except (OSError, ValueError) as e:
+            print(f"  ! skipped {p}: {e}")
+    sessions.sort(key=lambda s: s.get("datetime", ""))
+    hw = next((s["hw"] for s in sessions if s.get("hw", {}).get("cpu", "?") != "?"),
+              {"cpu": "?", "gpu": "?"})
+    runtimes = {k: {"chips": []} for k in
+                {s.get("runtime_key") for s in sessions if s.get("runtime_key")}}
+    return {
+        "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "hw": hw,
+        "totals": {"sessions": len(sessions),
+                   "hours": round(sum(s.get("duration_s", 0) for s in sessions) / 3600, 1),
+                   "samples": sum(s.get("samples", 0) for s in sessions)},
+        "active_channel": "", "channels": [], "settings": {},
+        "runtime": None, "runtimes": runtimes,
+        "play_sessions": _group_play_sessions(sessions),
+        "sessions": sessions, "imported": ", ".join(src),
+    }
+
 # ── HTML generation ──────────────────────────────────────────────────────────
 HTML = r"""<!DOCTYPE html>
 <html lang="en"><head>
@@ -326,7 +388,8 @@ tbody tr.sel{background:#23263340;outline:1px solid var(--accent)}
 <h1>🛰️ __TITLE__</h1>
 <div class="sub" id="sub"></div>
 <div class="toolbar">
-  <button class="btn" id="expCsv" title="Session table → spreadsheet">⬇ CSV</button>
+  <button class="btn" id="expCsv" title="Session table → spreadsheet (summary)">⬇ CSV</button>
+  <button class="btn" id="expJson" title="Full data → JSON (lossless; re-import for the exact dashboard)">⬇ JSON</button>
   <button class="btn" id="expImg" title="Full dashboard → image (everything, not just the screen)">🖼 JPEG</button>
 </div>
 <div class="hwbar" id="hwbar"></div>
@@ -370,7 +433,7 @@ const fmtDur=s=>{const m=Math.floor(s/60),sec=Math.round(s%60);return m+'m '+sec
 const EVCOL={bad:'#ff5d6c',warn:'#ffcf5c',info:'#8b90a0'};   // server-event colours (used early)
 
 // header
-$('#sub').textContent = DATA.totals.sessions+' sessions logged · generated '+DATA.generated;
+$('#sub').textContent = DATA.totals.sessions+' sessions'+(DATA.imported?' · imported from '+DATA.imported:' logged')+' · generated '+DATA.generated;
 $('#hwbar').innerHTML = `<div><span>CPU</span> <b>${DATA.hw.cpu}</b></div>
   <div><span>GPU</span> <b>${DATA.hw.gpu}</b></div>
   <div><span>Kernel</span> <b>${DATA.hw.kernel||'?'}</b></div>
@@ -558,28 +621,32 @@ function showDetail(i,tr){
   ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div><div class="v ${c}" style="font-size:${(''+v).length>10?'16px':'24px'}">${v}</div></div>`).join('');
   if(cFps)cFps.destroy(); if(cHist)cHist.destroy();
   const gx={grid:{color:'#2a2e3b'},ticks:{color:'#8b90a0'}};
-  cFps=new Chart($('#cFps'),{type:'line',plugins:[eventPlugin],data:{labels:s.series.t,
-    datasets:[
-      {label:'FPS',data:s.series.fps,borderColor:'#7c5cff',backgroundColor:'#7c5cff22',
-       borderWidth:1.4,pointRadius:0,fill:true,yAxisID:'y',tension:.2},
-      {label:'Frametime (ms)',data:s.series.frametime,borderColor:'#ff7a59',
-       borderWidth:1,pointRadius:0,yAxisID:'y1',tension:.2}]},
-    options:{animation:false,responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{labels:{color:'#e6e8ef'}},title:{display:true,text:'FPS & frametime over session (s) — vertical lines = server events',color:'#8b90a0'}},
-      scales:{x:gx,y:{...gx,position:'left',title:{display:true,text:'FPS',color:'#8b90a0'}},
-        y1:{...gx,position:'right',grid:{drawOnChartArea:false},title:{display:true,text:'ms',color:'#8b90a0'}}}}});
-  cFps.$events=s.events||[]; cFps.$dur=s.duration_s||1; cFps.update();
-  // events list under the charts
+  const hasSeries = s.series && s.series.fps && s.series.fps.length;
+  document.querySelector('#detail .charts').style.display = hasSeries?'grid':'none';
+  if(hasSeries){
+    cFps=new Chart($('#cFps'),{type:'line',plugins:[eventPlugin],data:{labels:s.series.t,
+      datasets:[
+        {label:'FPS',data:s.series.fps,borderColor:'#7c5cff',backgroundColor:'#7c5cff22',
+         borderWidth:1.4,pointRadius:0,fill:true,yAxisID:'y',tension:.2},
+        {label:'Frametime (ms)',data:s.series.frametime,borderColor:'#ff7a59',
+         borderWidth:1,pointRadius:0,yAxisID:'y1',tension:.2}]},
+      options:{animation:false,responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{labels:{color:'#e6e8ef'}},title:{display:true,text:'FPS & frametime over session (s) — vertical lines = server events',color:'#8b90a0'}},
+        scales:{x:gx,y:{...gx,position:'left',title:{display:true,text:'FPS',color:'#8b90a0'}},
+          y1:{...gx,position:'right',grid:{drawOnChartArea:false},title:{display:true,text:'ms',color:'#8b90a0'}}}}});
+    cFps.$events=s.events||[]; cFps.$dur=s.duration_s||1; cFps.update();
+    const labels=s.hist.edges.slice(0,-1).map((e,j)=>e+'–'+s.hist.edges[j+1]);
+    cHist=new Chart($('#cHist'),{type:'bar',data:{labels,datasets:[{label:'frames',
+      data:s.hist.counts,backgroundColor:s.hist.edges.slice(0,-1).map(e=>e>=60?'#46d18a':e>=40?'#ffcf5c':'#ff5d6c')}]},
+      options:{animation:false,responsive:true,maintainAspectRatio:false,
+        plugins:{legend:{display:false},title:{display:true,text:'FPS distribution',color:'#8b90a0'}},
+        scales:{x:gx,y:gx}}});
+  }
+  // events list under the charts (or a note when this is a summary-only import)
   const evs=s.events||[];
-  $('#devents').innerHTML = evs.length ? '<h3>Server events</h3>'+evs.map(e=>
-    `<div class="ev ev-${e.sev}"><span class="ev-t">+${fmtDur(e.at)}</span> ${e.detail}</div>`).join('')
-    : '';
-  const labels=s.hist.edges.slice(0,-1).map((e,j)=>e+'–'+s.hist.edges[j+1]);
-  cHist=new Chart($('#cHist'),{type:'bar',data:{labels,datasets:[{label:'frames',
-    data:s.hist.counts,backgroundColor:s.hist.edges.slice(0,-1).map(e=>e>=60?'#46d18a':e>=40?'#ffcf5c':'#ff5d6c')}]},
-    options:{animation:false,responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},title:{display:true,text:'FPS distribution',color:'#8b90a0'}},
-      scales:{x:gx,y:gx}}});
+  $('#devents').innerHTML = evs.length
+    ? '<h3>Server events</h3>'+evs.map(e=>`<div class="ev ev-${e.sev}"><span class="ev-t">+${fmtDur(e.at)}</span> ${e.detail}</div>`).join('')
+    : (hasSeries ? '' : '<div class="ev ev-info">Summary import — per-second trace, histogram and event timeline aren’t carried in a CSV. Share/import a <b>JSON</b> export for the full detail view.</div>');
 }
 renderTable();
 if(DATA.sessions.length)showDetail(DATA.sessions.length-1,$('#tbl tbody tr:last-child'));
@@ -606,6 +673,8 @@ function toCsv(){
 }
 $('#expCsv').onclick=()=>download(`sc-telemetry-${STAMP}.csv`,
   new Blob([toCsv()],{type:'text/csv'}));
+$('#expJson').onclick=()=>download(`sc-telemetry-${STAMP}.json`,
+  new Blob([JSON.stringify(DATA)],{type:'application/json'}));
 $('#expImg').onclick=function(){
   if(typeof html2canvas==='undefined'){alert('Image library not loaded (offline?). A screenshot works too.');return;}
   const b=this, old=b.textContent; b.disabled=true; b.textContent='rendering…';
@@ -798,6 +867,9 @@ def main():
                     help="label captures: no args = interactively tag every untagged "
                          "capture; with CSV file(s) = apply --label to them, then exit")
     ap.add_argument("--label", help="label text to apply to the --tag CSV file(s)")
+    ap.add_argument("--import", dest="imp", nargs="+", metavar="FILE",
+                    help="build a dashboard from exported CSV/JSON file(s) instead of "
+                         "local logs (JSON = full detail, CSV = summary; multiple files merge)")
     ap.add_argument("--serve", action="store_true",
                     help="run a live local dashboard (auto-refreshes as captures land) "
                          "instead of writing a file")
@@ -807,6 +879,20 @@ def main():
 
     if a.tag is not None:
         tag_captures(a.logs, a.tag, a.label)
+        return
+
+    if a.imp:
+        data = import_data(a.imp)
+        out = a.out
+        frozen = getattr(sys, "frozen", False)
+        if frozen and out == "dist/dashboard.html":
+            out = os.path.expanduser("~/sc-telemetry-imported.html")
+        render(data, out, a.title)
+        print(f"✓ imported {data['totals']['sessions']} session(s) from "
+              f"{data['imported']} → {out}")
+        if a.open or frozen:
+            import webbrowser
+            webbrowser.open("file://" + os.path.abspath(out))
         return
 
     if a.setup_mangohud:
