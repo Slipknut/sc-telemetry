@@ -186,7 +186,9 @@ def enrich(capture_start_local, duration_s, sessions):
                 if build is None:
                     c = CLIST.search(line)
                     if c: build = c.group(1)
-                if "fps_loadout" in line or "Arena Commander" in line or "Vanduul" in line:
+                # NB: "fps_loadout.socpak" is seeded by the Frontend/menu megamap too,
+                # so it is NOT an Arena Commander signal — only the explicit AC strings are.
+                if "Arena Commander" in line or "Vanduul" in line:
                     is_ac = True
                 ts = TS.search(line)
                 if not ts:
@@ -225,14 +227,17 @@ def enrich(capture_start_local, duration_s, sessions):
                         add(t, "menu", "info", "Returned to main menu")
     except OSError:
         return {}
-    # decide zone
-    if shard == "local_shard" or (is_ac and not (shard or "").startswith("pub")):
+    # decide zone. A networked shard = a real PU instance: LIVE shards are pub_*,
+    # PTU shards are ptu_* — both mean "in the PU", so a resolved location wins over
+    # the (weak) AC heuristic.
+    on_pu = (shard or "").startswith(("pub", "ptu"))
+    if shard == "local_shard" or (is_ac and not on_pu):
         zone = "Arena Commander"
     elif loc_anchor:
         zone = _prettify(loc_anchor[1])
     elif city_count:
         zone = max(city_count, key=city_count.get).replace("NewBabbage", "New Babbage")
-    elif (shard or "").startswith("pub"):
+    elif on_pu:
         zone = "Stanton (PU)"              # in a PU shard but no location line in window
     else:
         zone = ""                          # menu/launcher/loading — nothing to claim
